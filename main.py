@@ -15,6 +15,21 @@ from typing import Any, Optional
 import numpy as np
 from dotenv import load_dotenv
 
+# Use macOS Keychain (and the user's full trust store, including any
+# corporate root CAs imported by IT) for TLS verification.  Without this,
+# Python's default openssl CA bundle cannot validate certs re-signed by
+# enterprise SSL inspection (Zscaler, Fortinet, ...), and every WebSocket
+# connect to Qwen/Doubao fails with CERTIFICATE_VERIFY_FAILED.  Inject
+# before any aiohttp/ssl code runs.
+try:
+    import truststore
+
+    truststore.inject_into_ssl()
+except Exception as _truststore_err:  # noqa: BLE001
+    # truststore missing or unavailable — fall back to the default openssl
+    # bundle.  Home users without corporate proxies won't notice.
+    pass
+
 from src.runtime_paths import ENV_FILE, IS_FROZEN, ensure_runtime_layout
 
 ensure_runtime_layout()
@@ -40,7 +55,7 @@ from src.ui.status_bar import StatusBarController
 from src.utils.logger import logger
 
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __author__ = "Mor-Li"
 __description__ = "Qwen and Doubao realtime voice input for macOS"
 

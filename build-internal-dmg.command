@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PROJECT_DIR="${0:A:h}"
-VERSION="0.1.0"
+VERSION="0.1.1"
 OUTPUT_DIR="${1:-$PROJECT_DIR/dist-internal}"
 RUN_ID="$(date +%Y%m%d-%H%M%S)-$$"
 WORK_DIR="$PROJECT_DIR/.package-build/$RUN_ID"

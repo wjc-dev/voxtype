@@ -1,4 +1,4 @@
-# VoxType Next — Qwen / Doubao macOS runtime
+# VoxType — Qwen / Doubao macOS runtime
 aiohttp>=3.9,<4
 colorlog>=6.9,<7
 numpy>=2.0,<3
@@ -12,3 +12,4 @@ PyQt5>=5.15.11,<6
 python-dotenv>=1.0,<2
 sounddevice>=0.5,<1
 soundfile>=0.13,<1
+truststore>=0.10,<1
