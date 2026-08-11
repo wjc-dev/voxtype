@@ -89,8 +89,6 @@ shasum -a 256 "$ZIP_PATH" > "$ZIP_PATH.sha256"
 print "完成：$ZIP_PATH"
 
 ditto "$APP_PATH" "$STAGING/VoxType.app"
-cp "$PROJECT_DIR/packaging/内测版使用说明.txt" "$STAGING/使用说明.txt"
-cp "$PROJECT_DIR/版本说明-v0.1.0.md" "$STAGING/版本说明-v0.1.0.md"
 ln -s /Applications "$STAGING/Applications"
 
 if hdiutil create -volname "VoxType" -srcfolder "$STAGING" \
