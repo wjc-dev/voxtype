@@ -1,0 +1,1729 @@
+import AppKit
+import Darwin
+import Foundation
+import SwiftUI
+
+private func raiseSettingsWindows() {
+    // The settings helper is an accessory of the menu-bar app, not a second
+    // standalone application.  Keeping accessory policy prevents the raw
+    // helper executable from creating a generic white icon in the Dock while
+    // still allowing its settings window to become key and frontmost.
+    NSApp.setActivationPolicy(.accessory)
+    NSApp.activate(ignoringOtherApps: true)
+    for window in NSApp.windows {
+        // The helper owns only one transient settings window.  Disabling
+        // minimization prevents macOS from leaving generic executable/window
+        // tiles in the Dock when the user is finished configuring the app.
+        window.styleMask.remove(.miniaturizable)
+        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        window.deminiaturize(nil)
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
+    }
+}
+
+final class SettingsAppDelegate: NSObject, NSApplicationDelegate {
+    private var raiseSignal: DispatchSourceSignal?
+    private var instanceLockURL: URL?
+    private var shortcutCaptureURL: URL?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.accessory)
+        let environment = ProcessInfo.processInfo.environment
+        let root = environment["VOICE_INPUT_DATA_ROOT"]
+            ?? environment["VOICE_INPUT_ROOT"]
+            ?? FileManager.default.currentDirectoryPath
+        Darwin.signal(SIGUSR1, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
+        source.setEventHandler { raiseSettingsWindows() }
+        source.resume()
+        raiseSignal = source
+
+        let dataURL = URL(fileURLWithPath: root, isDirectory: true)
+        shortcutCaptureURL = dataURL.appendingPathComponent(".shortcut-capture")
+        let instanceURL = dataURL.appendingPathComponent(".settings-instance")
+        if acquireInstanceLock(instanceURL) {
+            instanceLockURL = instanceURL
+        } else {
+            if let pidText = try? String(contentsOf: instanceURL, encoding: .utf8),
+               let pid = Int32(pidText.trimmingCharacters(in: .whitespacesAndNewlines)),
+               pid > 1 {
+                Darwin.kill(pid, SIGUSR1)
+            }
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+            return
+        }
+        DispatchQueue.main.async { raiseSettingsWindows() }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        removeOwnedLock(instanceLockURL)
+        removeOwnedLock(shortcutCaptureURL)
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        true
+    }
+
+    private func acquireInstanceLock(_ url: URL) -> Bool {
+        for _ in 0..<2 {
+            let fd = Darwin.open(url.path, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR)
+            if fd >= 0 {
+                let pidBytes = Array(String(getpid()).utf8)
+                pidBytes.withUnsafeBytes { buffer in
+                    _ = Darwin.write(fd, buffer.baseAddress, buffer.count)
+                }
+                Darwin.close(fd)
+                return true
+            }
+            guard let pidText = try? String(contentsOf: url, encoding: .utf8),
+                  let pid = Int32(pidText.trimmingCharacters(in: .whitespacesAndNewlines))
+            else {
+                try? FileManager.default.removeItem(at: url)
+                continue
+            }
+            if Darwin.kill(pid, 0) == 0 { return false }
+            try? FileManager.default.removeItem(at: url)
+        }
+        return false
+    }
+
+    private func removeOwnedLock(_ url: URL?) {
+        guard let url,
+              let contents = try? String(contentsOf: url, encoding: .utf8),
+              contents.trimmingCharacters(in: .whitespacesAndNewlines) == String(getpid())
+        else { return }
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        DispatchQueue.main.async { raiseSettingsWindows() }
+    }
+
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication,
+        hasVisibleWindows flag: Bool
+    ) -> Bool {
+        DispatchQueue.main.async { raiseSettingsWindows() }
+        return true
+    }
+}
+
+enum SettingsPane: String, CaseIterable, Identifiable {
+    case general = "通用"
+    case qwen = "千问"
+    case corrections = "共享纠错"
+    case recovery = "恢复与诊断"
+
+    var id: String { rawValue }
+    var icon: String {
+        switch self {
+        case .general: return "gearshape"
+        case .qwen: return "sparkles"
+        case .corrections: return "text.badge.checkmark"
+        case .recovery: return "lifepreserver"
+        }
+    }
+}
+
+struct CorrectionRule: Codable, Identifiable, Hashable {
+    var wrong: String
+    var correct: String
+    var count: Int
+    var firstSeen: String?
+    var lastSeen: String?
+    var enabled: Bool?
+
+    var id: String { wrong + "\u{0}" + correct }
+
+    enum CodingKeys: String, CodingKey {
+        case wrong, correct, count, enabled
+        case firstSeen = "first_seen"
+        case lastSeen = "last_seen"
+    }
+}
+
+struct CorrectionFile: Codable {
+    var version: Int
+    var rules: [CorrectionRule]
+    var events: [CorrectionEvent]?
+}
+
+struct CorrectionEvent: Codable {
+    var wrong: String
+    var correct: String
+    var timestamp: String
+}
+
+struct RecoveryEntry: Codable, Identifiable, Hashable {
+    var id: String
+    var text: String
+    var reason: String
+    var timestamp: String
+}
+
+struct DiagnosticSnapshot: Codable {
+    var version: String?
+    var engine: String?
+    var state: String?
+    var microphone: String?
+    var sampleRate: Int?
+    var hotkey: String?
+    var hotkeyBackend: String?
+    var archiveEnabled: Bool?
+    var targetLocked: Bool?
+    var lastError: String?
+    var updatedAt: String?
+    var lastSessionOutcome: String?
+    var lastSessionAudioMs: Int?
+    var lastSessionVoicedMs: Int?
+    var lastSessionPreviewCount: Int?
+    var lastSessionFirstPreviewMs: Int?
+    var lastSessionCommitted: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case version, engine, state, microphone, hotkey
+        case hotkeyBackend = "hotkey_backend"
+        case sampleRate = "sample_rate"
+        case archiveEnabled = "archive_enabled"
+        case targetLocked = "target_locked"
+        case lastError = "last_error"
+        case updatedAt = "updated_at"
+        case lastSessionOutcome = "last_session_outcome"
+        case lastSessionAudioMs = "last_session_audio_ms"
+        case lastSessionVoicedMs = "last_session_voiced_ms"
+        case lastSessionPreviewCount = "last_session_preview_count"
+        case lastSessionFirstPreviewMs = "last_session_first_preview_ms"
+        case lastSessionCommitted = "last_session_committed"
+    }
+}
+
+struct PermissionSnapshot: Codable {
+    var version: String?
+    var bundleIdentifier: String?
+    var bundlePath: String?
+    var executablePath: String?
+    var executableFingerprint: String?
+    var pid: Int?
+    var microphone: String?
+    var accessibility: String?
+    var inputMonitoring: String?
+    var inputMonitoringRequired: Bool?
+    var allRequiredGranted: Bool?
+    var checkedByCurrentProcess: Bool?
+    var updatedAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case version, pid, microphone, accessibility
+        case bundleIdentifier = "bundle_identifier"
+        case bundlePath = "bundle_path"
+        case executablePath = "executable_path"
+        case executableFingerprint = "executable_fingerprint"
+        case inputMonitoring = "input_monitoring"
+        case inputMonitoringRequired = "input_monitoring_required"
+        case allRequiredGranted = "all_required_granted"
+        case checkedByCurrentProcess = "checked_by_current_process"
+        case updatedAt = "updated_at"
+    }
+}
+
+struct PermissionRequest: Codable {
+    var permission: String
+    var openSettings: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case permission
+        case openSettings = "open_settings"
+    }
+}
+
+@MainActor
+final class SettingsModel: ObservableObject {
+    let rootURL: URL
+    let dataURL: URL
+    let isBundled: Bool
+    let appPath: String
+    let parentPID: Int32
+    private var environment: [String: String] = [:]
+
+    @Published var punctuationMode = "spaces"
+    @Published var disfluencyMode = "off"
+    @Published var hotkeySpec = "fn"
+    @Published var hotkeyLabel = "Fn / Globe"
+    @Published var hotkeyMode = "hold"
+    @Published var hotkeyBackend = "passive"
+    @Published var launchAtLogin = true
+
+    @Published var transcriptionService = "qwen"
+
+    @Published var qwenAPIKey = ""
+    @Published var qwenAPIHost = ""
+    @Published var qwenWorkspace = ""
+    @Published var qwenRegion = "beijing"
+    @Published var qwenLanguage = "zh"
+    @Published var qwenContextEnabled = false
+    @Published var recentMemoryEnabled = false
+    @Published var doubaoAppKey = ""
+    @Published var doubaoAccessKey = ""
+    @Published var doubaoBoostingTableID = ""
+    @Published var personalContext = ""
+    @Published var customVocabulary = ""
+
+    @Published var learningEnabled = true
+    @Published var autoReplaceEnabled = true
+    @Published var learnedContextEnabled = true
+    @Published var corrections: [CorrectionRule] = []
+    @Published var recoveries: [RecoveryEntry] = []
+    @Published var diagnostics = DiagnosticSnapshot()
+    @Published var permissions = PermissionSnapshot()
+    @Published var permissionsLoaded = false
+    private var correctionEvents: [CorrectionEvent] = []
+    @Published var notice: String?
+    @Published var errorMessage: String?
+
+    init() {
+        let rootPath = ProcessInfo.processInfo.environment["VOICE_INPUT_ROOT"]
+            ?? FileManager.default.currentDirectoryPath
+        let dataPath = ProcessInfo.processInfo.environment["VOICE_INPUT_DATA_ROOT"]
+            ?? rootPath
+        rootURL = URL(fileURLWithPath: rootPath, isDirectory: true)
+        dataURL = URL(fileURLWithPath: dataPath, isDirectory: true)
+        isBundled = ProcessInfo.processInfo.environment["VOICE_INPUT_BUNDLED"] == "true"
+        appPath = ProcessInfo.processInfo.environment["VOICE_INPUT_APP_PATH"] ?? ""
+        parentPID = Int32(ProcessInfo.processInfo.environment["VOICE_INPUT_PARENT_PID"] ?? "") ?? 0
+        try? FileManager.default.createDirectory(
+            at: dataURL, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        launchAtLogin = isBundled
+            ? FileManager.default.fileExists(atPath: Self.loginAgentURL.path)
+            : false
+        load()
+    }
+
+    var envURL: URL { dataURL.appendingPathComponent(".env") }
+    var contextURL: URL { dataURL.appendingPathComponent("personal_context.txt") }
+    var customVocabularyURL: URL {
+        dataURL.appendingPathComponent("custom_vocabulary.txt")
+    }
+    var correctionsURL: URL { dataURL.appendingPathComponent("corrections.json") }
+    var recoveryURL: URL { dataURL.appendingPathComponent("recovery.json") }
+    var diagnosticsURL: URL { dataURL.appendingPathComponent("diagnostics.json") }
+    var permissionsURL: URL { dataURL.appendingPathComponent("permissions.json") }
+    var permissionRequestURL: URL {
+        dataURL.appendingPathComponent(".permission-request.json")
+    }
+    var shortcutCaptureURL: URL { dataURL.appendingPathComponent(".shortcut-capture") }
+
+    static var loginAgentURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents/com.voxtype.dev.plist")
+    }
+
+    static var legacyLoginAgentURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents/com.voxtype.dev.legacy.plist")
+    }
+
+    func load() {
+        environment = Self.readEnvironment(envURL)
+        transcriptionService = environment["TRANSCRIPTION_SERVICE"] == "doubao"
+            ? "doubao" : "qwen"
+        punctuationMode = environment["PUNCTUATION_MODE"] ?? "spaces"
+        disfluencyMode = environment["DISFLUENCY_FILTER_MODE"]
+            ?? (Self.bool(environment["DISFLUENCY_FILTER_ENABLED"], fallback: false)
+                ? "conservative" : "off")
+        hotkeyMode = environment["FN_HOTKEY_MODE"] ?? "hold"
+        hotkeyBackend = environment["GLOBAL_HOTKEY_BACKEND"] ?? "passive"
+        hotkeySpec = environment["VOICE_HOTKEY"]
+            ?? ((environment["SINGLE_FN_HOTKEY"] ?? "false") == "true" ? "fn" : "fn")
+        hotkeyLabel = environment["VOICE_HOTKEY_LABEL"] ?? Self.label(for: hotkeySpec)
+
+        qwenRegion = environment["QWEN_REGION"] ?? "beijing"
+        qwenAPIKey = environment["QWEN_API_KEY"] ?? ""
+        qwenAPIHost = environment["QWEN_API_HOST"]?.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ) ?? ""
+        if qwenAPIHost.isEmpty {
+            qwenAPIHost = Self.defaultQwenAPIHost(
+                region: qwenRegion,
+                apiKey: qwenAPIKey
+            )
+        }
+        qwenWorkspace = environment["QWEN_WORKSPACE_ID"] ?? ""
+        qwenLanguage = environment["QWEN_LANGUAGE"] ?? "zh"
+        qwenContextEnabled = Self.bool(environment["QWEN_CONTEXT_ENABLED"], fallback: false)
+        recentMemoryEnabled = Self.bool(environment["QWEN_RECENT_MEMORY_ENABLED"], fallback: false)
+        doubaoAppKey = environment["DOUBAO_APP_KEY"] ?? ""
+        doubaoAccessKey = environment["DOUBAO_ACCESS_KEY"] ?? ""
+        doubaoBoostingTableID = environment["DOUBAO_BOOSTING_TABLE_ID"] ?? ""
+        // Automatic edit observation remains an internal experiment until a
+        // future review/confirmation UI can make every learned rule explicit.
+        learningEnabled = false
+        autoReplaceEnabled = false
+        learnedContextEnabled = false
+        personalContext = (try? String(contentsOf: contextURL, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        customVocabulary = (try? String(
+            contentsOf: customVocabularyURL,
+            encoding: .utf8
+        ))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        reloadCorrections()
+        reloadRecoveries()
+        reloadDiagnostics()
+        reloadPermissions()
+    }
+
+    func reloadCorrections() {
+        guard let data = try? Data(contentsOf: correctionsURL),
+              let file = try? JSONDecoder().decode(CorrectionFile.self, from: data) else {
+            corrections = []
+            correctionEvents = []
+            return
+        }
+        correctionEvents = file.events ?? []
+        corrections = file.rules.sorted {
+            if $0.count == $1.count { return ($0.lastSeen ?? "") > ($1.lastSeen ?? "") }
+            return $0.count > $1.count
+        }
+    }
+
+    func reloadRecoveries() {
+        guard let data = try? Data(contentsOf: recoveryURL),
+              let entries = try? JSONDecoder().decode([RecoveryEntry].self, from: data)
+        else {
+            recoveries = []
+            return
+        }
+        recoveries = entries
+    }
+
+    func reloadDiagnostics() {
+        guard let data = try? Data(contentsOf: diagnosticsURL),
+              let snapshot = try? JSONDecoder().decode(DiagnosticSnapshot.self, from: data)
+        else {
+            diagnostics = DiagnosticSnapshot()
+            return
+        }
+        diagnostics = snapshot
+    }
+
+    func reloadPermissions() {
+        guard let data = try? Data(contentsOf: permissionsURL),
+              let snapshot = try? JSONDecoder().decode(PermissionSnapshot.self, from: data)
+        else {
+            permissionsLoaded = false
+            return
+        }
+        permissions = snapshot
+        permissionsLoaded = true
+    }
+
+    func requestPermission(_ permission: String, openSettings: Bool = true) {
+        do {
+            let request = PermissionRequest(
+                permission: permission,
+                openSettings: openSettings
+            )
+            try Self.privateWrite(
+                JSONEncoder.pretty.encode(request),
+                to: permissionRequestURL
+            )
+        } catch {
+            errorMessage = "无法发起权限请求：\(error.localizedDescription)"
+        }
+    }
+
+    var permissionsMatchCurrentApp: Bool {
+        guard permissions.checkedByCurrentProcess == true,
+              let permissionPID = permissions.pid,
+              permissionPID > 1,
+              Darwin.kill(Int32(permissionPID), 0) == 0,
+              let permissionVersion = permissions.version,
+              permissionVersion == diagnostics.version
+        else { return false }
+        if !appPath.isEmpty {
+            guard let permissionPath = permissions.bundlePath,
+                  URL(fileURLWithPath: permissionPath).standardizedFileURL.path
+                    == URL(fileURLWithPath: appPath).standardizedFileURL.path
+            else { return false }
+            if let executablePath = permissions.executablePath {
+                let expectedExecutable = URL(fileURLWithPath: appPath)
+                    .appendingPathComponent("Contents/MacOS/VoxType")
+                    .standardizedFileURL.path
+                guard URL(fileURLWithPath: executablePath).standardizedFileURL.path
+                        == expectedExecutable
+                else { return false }
+            }
+        }
+        return true
+    }
+
+    var allRequiredPermissionsGranted: Bool {
+        permissionsMatchCurrentApp && permissions.allRequiredGranted == true
+    }
+
+    func deleteRecoveries(ids: Set<String>) {
+        recoveries.removeAll { ids.contains($0.id) }
+        persistRecoveries()
+    }
+
+    func clearRecoveries() {
+        recoveries = []
+        persistRecoveries()
+    }
+
+    func copyRecovery(_ entry: RecoveryEntry) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(entry.text, forType: .string)
+        notice = "恢复文字已由你主动复制到剪贴板。"
+    }
+
+    private func persistRecoveries() {
+        do {
+            try Self.privateWrite(JSONEncoder.pretty.encode(recoveries), to: recoveryURL)
+        } catch {
+            errorMessage = "无法更新恢复记录：\(error.localizedDescription)"
+        }
+    }
+
+    func deleteCorrections(ids: Set<String>) {
+        let deleted = Set(corrections.filter { ids.contains($0.id) }.map(\.id))
+        corrections.removeAll { ids.contains($0.id) }
+        correctionEvents.removeAll { deleted.contains($0.wrong + "\u{0}" + $0.correct) }
+        persistCorrections()
+    }
+
+    func clearCorrections() {
+        corrections = []
+        correctionEvents = []
+        persistCorrections()
+    }
+
+    func undoLastCorrection() {
+        guard let event = correctionEvents.popLast() else { return }
+        guard let index = corrections.firstIndex(where: {
+            $0.wrong == event.wrong && $0.correct == event.correct
+        }) else {
+            persistCorrections()
+            return
+        }
+        corrections[index].count -= 1
+        if corrections[index].count <= 0 {
+            corrections.remove(at: index)
+        } else {
+            corrections[index].lastSeen = correctionEvents.last(where: {
+                $0.wrong == event.wrong && $0.correct == event.correct
+            })?.timestamp ?? corrections[index].firstSeen
+        }
+        persistCorrections()
+        notice = "已撤销最近一次自动学习。"
+    }
+
+    var canUndoCorrection: Bool { !correctionEvents.isEmpty }
+
+    var customVocabularyCount: Int {
+        var seen = Set<String>()
+        return customVocabulary
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { term in
+                guard !term.isEmpty, !term.hasPrefix("#") else { return false }
+                return seen.insert(term.lowercased()).inserted
+            }
+            .count
+    }
+
+    private func persistCorrections() {
+        do {
+            let data = try JSONEncoder.pretty.encode(
+                CorrectionFile(version: 2, rules: corrections, events: correctionEvents)
+            )
+            try Self.privateWrite(data, to: correctionsURL)
+        } catch {
+            errorMessage = "无法更新纠错词库：\(error.localizedDescription)"
+        }
+    }
+
+    func saveAndRestart() {
+        if transcriptionService == "qwen" {
+            guard qwenAPIKey.count >= 20,
+                  !qwenAPIKey.contains(where: { $0.isWhitespace }) else {
+                errorMessage = "千问 API Key 格式不正确。"
+                return
+            }
+            let normalizedHost = qwenAPIHost.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let hostURL = URL(string: normalizedHost),
+                  hostURL.scheme?.lowercased() == "https",
+                  let host = hostURL.host?.lowercased(),
+                  host.hasSuffix(".aliyuncs.com") else {
+                errorMessage = "请填写百炼 API Key 页面展示的 OpenAI compatible API 地址。"
+                return
+            }
+            qwenAPIHost = normalizedHost
+        } else {
+            guard !doubaoAppKey.isEmpty,
+                  doubaoAppKey.allSatisfy(\.isNumber),
+                  doubaoAccessKey.count >= 16,
+                  !doubaoAccessKey.contains(where: { $0.isWhitespace }) else {
+                errorMessage = "请填写正确的豆包 App ID 和 Access Token。"
+                return
+            }
+        }
+
+        // The compact UI derives the backend from the chosen key. Modifier-only
+        // shortcuts need the read-only event tap; ordinary combinations use
+        // Carbon's single registered hotkey and avoid broad keyboard monitoring.
+        hotkeyBackend = Self.backend(for: hotkeySpec)
+        if hotkeyMode != "hold" && hotkeyMode != "toggle" {
+            hotkeyMode = "hold"
+        }
+        disfluencyMode = "off"
+
+        var updates: [String: String] = [
+            "TRANSCRIPTION_SERVICE": transcriptionService,
+            "PUNCTUATION_MODE": punctuationMode,
+            "DISFLUENCY_FILTER_ENABLED": "false",
+            "DISFLUENCY_FILTER_MODE": "off",
+            "VOICE_HOTKEY": hotkeySpec,
+            "VOICE_HOTKEY_LABEL": hotkeyLabel,
+            "FN_HOTKEY_MODE": hotkeyMode,
+            "GLOBAL_HOTKEY_BACKEND": hotkeyBackend,
+            "SINGLE_FN_HOTKEY": "true",
+            "QWEN_API_KEY": qwenAPIKey,
+            "QWEN_API_HOST": qwenAPIHost,
+            "QWEN_WORKSPACE_ID": qwenAPIHost.isEmpty ? qwenWorkspace : "",
+            "QWEN_REGION": qwenRegion,
+            "QWEN_LANGUAGE": qwenLanguage,
+            "QWEN_CONTEXT_ENABLED": String(qwenContextEnabled),
+            "QWEN_CONTEXT_FILE": contextURL.path,
+            "CUSTOM_VOCABULARY_FILE": customVocabularyURL.path,
+            "QWEN_RECENT_MEMORY_ENABLED": String(recentMemoryEnabled),
+            "QWEN_RECENT_MEMORY_COUNT": "20",
+            "DOUBAO_APP_KEY": doubaoAppKey,
+            "DOUBAO_ACCESS_KEY": doubaoAccessKey,
+            "DOUBAO_BOOSTING_TABLE_ID": doubaoBoostingTableID.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ),
+            "EXPERIMENTAL_CORRECTION_LEARNING": "false",
+            "CORRECTION_LEARNING_ENABLED": "false",
+            "CORRECTION_AUTO_REPLACE": "false",
+            "CORRECTION_REPLACE_MIN_COUNT": "2",
+            "CORRECTION_CONTEXT_ENABLED": "false",
+            "CORRECTION_CONTEXT_MIN_COUNT": "2",
+        ]
+        // Python expects lowercase boolean values.
+        for key in updates.keys where updates[key] == "true" || updates[key] == "false" {
+            updates[key] = updates[key]!.lowercased()
+        }
+
+        do {
+            try Self.updateEnvironmentFile(envURL, updates: updates)
+            try Self.privateWrite(Data(personalContext.utf8), to: contextURL)
+            try Self.privateWrite(Data(customVocabulary.utf8), to: customVocabularyURL)
+            if isBundled {
+                try configureLaunchAtLogin()
+            } else {
+                try restartBackgroundService()
+            }
+            environment.merge(updates) { _, new in new }
+            if isBundled {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    exit(42)
+                }
+            } else {
+                notice = "设置已保存，后台语音服务已经重启。"
+            }
+        } catch {
+            errorMessage = "保存失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func configureLaunchAtLogin() throws {
+        let agentURL = Self.loginAgentURL
+        let domain = "gui/\(getuid())"
+
+        // 3.5.2 gave the packaged app a stable identity distinct from old
+        // ad-hoc-signed backups. Retire only the obsolete login item; the app,
+        // API key and all user data are intentionally left untouched.
+        let legacyAgentURL = Self.legacyLoginAgentURL
+        let legacy = Process()
+        legacy.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        legacy.arguments = ["bootout", domain, legacyAgentURL.path]
+        try? legacy.run()
+        legacy.waitUntilExit()
+        try? FileManager.default.removeItem(at: legacyAgentURL)
+
+        let existing = Process()
+        existing.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        existing.arguments = ["bootout", domain, agentURL.path]
+        try? existing.run()
+        existing.waitUntilExit()
+
+        if !launchAtLogin {
+            try? FileManager.default.removeItem(at: agentURL)
+            return
+        }
+        guard !appPath.isEmpty else {
+            throw NSError(
+                domain: "VoiceInputSettings", code: 12,
+                userInfo: [NSLocalizedDescriptionKey: "无法确定 App 路径，请把 App 放入“应用程序”后重试。"]
+            )
+        }
+        try FileManager.default.createDirectory(
+            at: agentURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let plist: [String: Any] = [
+            "Label": "com.voxtype.dev",
+            "ProgramArguments": [
+                "/usr/bin/open", appPath, "--args", "--background-login"
+            ],
+            "RunAtLoad": true,
+            "KeepAlive": false,
+            "LimitLoadToSessionType": "Aqua",
+        ]
+        let data = try PropertyListSerialization.data(
+            fromPropertyList: plist, format: .xml, options: 0
+        )
+        try Self.privateWrite(data, to: agentURL)
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        task.arguments = ["bootstrap", domain, agentURL.path]
+        try task.run()
+        task.waitUntilExit()
+        if task.terminationStatus != 0 {
+            throw NSError(
+                domain: "VoiceInputSettings", code: Int(task.terminationStatus),
+                userInfo: [NSLocalizedDescriptionKey: "无法启用开机启动"]
+            )
+        }
+    }
+
+    func quitVoiceInput() {
+        if parentPID > 1 { kill(parentPID, SIGTERM) }
+        NSApp.terminate(nil)
+    }
+
+    private func restartBackgroundService() throws {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        task.arguments = [
+            "kickstart", "-k",
+            "gui/\(getuid())/com.whisper-input-next",
+        ]
+        try task.run()
+        task.waitUntilExit()
+        if task.terminationStatus != 0 {
+            throw NSError(domain: "VoiceInputSettings", code: Int(task.terminationStatus),
+                          userInfo: [NSLocalizedDescriptionKey: "后台服务重启失败"])
+        }
+    }
+
+    static func bool(_ value: String?, fallback: Bool) -> Bool {
+        guard let value else { return fallback }
+        return value.lowercased() == "true"
+    }
+
+    static func defaultQwenAPIHost(region: String, apiKey: String) -> String {
+        if apiKey.hasPrefix("sk-sp-") {
+            return "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+        }
+        if region == "singapore" {
+            return "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+        }
+        return "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    }
+
+    static func label(for spec: String) -> String {
+        switch spec {
+        case "fn": return "地球仪 / Fn（🌐）"
+        case "right_option": return "右 Option（⌥）"
+        case "right_command": return "右 Command（⌘）"
+        default: return "自定义快捷键"
+        }
+    }
+
+    static func backend(for spec: String) -> String {
+        guard spec.hasPrefix("keycode:"),
+              let marker = spec.range(of: ";mods:")
+        else { return "passive" }
+        let modifiers = spec[marker.upperBound...]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return modifiers.isEmpty ? "passive" : "registered"
+    }
+
+    static func readEnvironment(_ url: URL) -> [String: String] {
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [:] }
+        var result: [String: String] = [:]
+        for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = String(rawLine)
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.hasPrefix("#"), let equal = line.firstIndex(of: "=") else { continue }
+            let key = line[..<equal].trimmingCharacters(in: .whitespaces)
+            result[key] = String(line[line.index(after: equal)...])
+        }
+        return result
+    }
+
+    static func updateEnvironmentFile(_ url: URL, updates: [String: String]) throws {
+        let existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        var pending = updates
+        var lines: [String] = []
+        for line in existing.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if !trimmed.hasPrefix("#"), let equal = line.firstIndex(of: "=") {
+                let key = line[..<equal].trimmingCharacters(in: .whitespaces)
+                if let value = pending.removeValue(forKey: key) {
+                    lines.append("\(key)=\(value)")
+                    continue
+                }
+            }
+            lines.append(line)
+        }
+        if lines.last != "" { lines.append("") }
+        for key in pending.keys.sorted() { lines.append("\(key)=\(pending[key]!)") }
+        try privateWrite(Data((lines.joined(separator: "\n") + "\n").utf8), to: url)
+    }
+
+    static func privateWrite(_ data: Data, to url: URL) throws {
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try data.write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+}
+
+extension JSONEncoder {
+    static var pretty: JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        return encoder
+    }
+}
+
+struct HotkeyRecorder: View {
+    @Binding var spec: String
+    @Binding var label: String
+    let captureLockURL: URL
+    @State private var recording = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button {
+                if recording {
+                    updateCaptureLock(false)
+                    recording = false
+                } else {
+                    // Write the lock before moving focus to the recorder view.
+                    // Otherwise a very fast Option/Fn press can still trigger
+                    // the running voice shortcut instead of being captured.
+                    updateCaptureLock(true)
+                    recording = true
+                }
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: recording ? "keyboard.badge.ellipsis" : "keyboard")
+                    Text(recording ? "请按快捷键…" : label)
+                        .monospacedDigit()
+                }
+                .frame(minWidth: 150)
+            }
+            .controlSize(.large)
+            .buttonStyle(.bordered)
+
+            Menu("常用选项") {
+                Button("⌃⌥Space（企业兼容）") {
+                    choose("keycode:49;mods:control+option", "⌃⌥Space")
+                }
+                Button("地球仪 / Fn（🌐）") { choose("fn", "地球仪 / Fn（🌐）") }
+                Button("右 Option（⌥）") { choose("right_option", "右 Option（⌥）") }
+                Button("右 Command（⌘）") { choose("right_command", "右 Command（⌘）") }
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+
+            if recording {
+                Button("取消") {
+                    updateCaptureLock(false)
+                    recording = false
+                }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .background(
+            HotkeyCaptureView(isRecording: $recording, spec: $spec, label: $label)
+                .frame(width: 0, height: 0)
+        )
+        .onChange(of: recording) { active in
+            updateCaptureLock(active)
+        }
+        .onDisappear {
+            updateCaptureLock(false)
+        }
+    }
+
+    private func choose(_ newSpec: String, _ newLabel: String) {
+        spec = newSpec
+        label = newLabel
+        recording = false
+    }
+
+    private func updateCaptureLock(_ active: Bool) {
+        if active {
+            try? Data(String(getpid()).utf8).write(to: captureLockURL, options: .atomic)
+            return
+        }
+        guard let contents = try? String(contentsOf: captureLockURL, encoding: .utf8),
+              contents.trimmingCharacters(in: .whitespacesAndNewlines) == String(getpid())
+        else { return }
+        try? FileManager.default.removeItem(at: captureLockURL)
+    }
+}
+
+final class HotkeyCaptureNSView: NSView {
+    var onEvent: ((NSEvent) -> Bool)?
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func keyDown(with event: NSEvent) {
+        if onEvent?(event) != true { super.keyDown(with: event) }
+    }
+
+    override func flagsChanged(with event: NSEvent) {
+        if onEvent?(event) != true { super.flagsChanged(with: event) }
+    }
+}
+
+struct HotkeyCaptureView: NSViewRepresentable {
+    @Binding var isRecording: Bool
+    @Binding var spec: String
+    @Binding var label: String
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    func makeNSView(context: Context) -> HotkeyCaptureNSView {
+        let view = HotkeyCaptureNSView(frame: .zero)
+        view.onEvent = { [weak coordinator = context.coordinator] event in
+            coordinator?.capture(event) ?? false
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: HotkeyCaptureNSView, context: Context) {
+        context.coordinator.parent = self
+        nsView.onEvent = { [weak coordinator = context.coordinator] event in
+            coordinator?.capture(event) ?? false
+        }
+        if isRecording {
+            context.coordinator.setActive(true)
+            DispatchQueue.main.async {
+                nsView.window?.makeFirstResponder(nsView)
+            }
+        } else if nsView.window?.firstResponder === nsView {
+            context.coordinator.setActive(false)
+            nsView.window?.makeFirstResponder(nil)
+        } else {
+            context.coordinator.setActive(false)
+        }
+    }
+
+    final class Coordinator {
+        var parent: HotkeyCaptureView
+        private var localMonitor: Any?
+
+        init(_ parent: HotkeyCaptureView) { self.parent = parent }
+
+        deinit {
+            if let localMonitor { NSEvent.removeMonitor(localMonitor) }
+        }
+
+        func setActive(_ active: Bool) {
+            if active, localMonitor == nil {
+                localMonitor = NSEvent.addLocalMonitorForEvents(
+                    matching: [.keyDown, .flagsChanged]
+                ) { [weak self] event in
+                    guard let self else { return event }
+                    return self.capture(event) ? nil : event
+                }
+            } else if !active, let localMonitor {
+                NSEvent.removeMonitor(localMonitor)
+                self.localMonitor = nil
+            }
+        }
+
+        func capture(_ event: NSEvent) -> Bool {
+            if event.type == .flagsChanged {
+                let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                if event.keyCode == 63, flags.contains(.function) {
+                    complete(spec: "fn", label: "地球仪 / Fn（🌐）")
+                    return true
+                }
+                if event.keyCode == 61, flags.contains(.option) {
+                    complete(spec: "right_option", label: "右 Option（⌥）")
+                    return true
+                }
+                if event.keyCode == 54, flags.contains(.command) {
+                    complete(spec: "right_command", label: "右 Command（⌘）")
+                    return true
+                }
+                return false
+            }
+
+            if event.keyCode == 53 { // Escape cancels recording.
+                DispatchQueue.main.async { self.parent.isRecording = false }
+                return true
+            }
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            let modifierNames = Self.modifierNames(flags)
+            let keyName = Self.keyName(event)
+            let isFunctionKey = Self.functionKeyCodes[event.keyCode] != nil
+            guard !keyName.isEmpty, !modifierNames.isEmpty || isFunctionKey else {
+                NSSound.beep()
+                return true
+            }
+            let encoded = modifierNames.map(\.name).joined(separator: "+")
+            let newSpec = "keycode:\(event.keyCode);mods:\(encoded)"
+            let newLabel = modifierNames.map(\.symbol).joined() + keyName
+            complete(spec: newSpec, label: newLabel)
+            return true
+        }
+
+        func complete(spec: String, label: String) {
+            DispatchQueue.main.async {
+                self.parent.spec = spec
+                self.parent.label = label
+                self.parent.isRecording = false
+            }
+        }
+
+        static func modifierNames(_ flags: NSEvent.ModifierFlags) -> [(name: String, symbol: String)] {
+            var result: [(String, String)] = []
+            if flags.contains(.control) { result.append(("control", "⌃")) }
+            if flags.contains(.option) { result.append(("option", "⌥")) }
+            if flags.contains(.shift) { result.append(("shift", "⇧")) }
+            if flags.contains(.command) { result.append(("command", "⌘")) }
+            if flags.contains(.function) { result.append(("function", "fn ")) }
+            return result
+        }
+
+        static let functionKeyCodes: [UInt16: String] = [
+            122: "F1", 120: "F2", 99: "F3", 118: "F4", 96: "F5", 97: "F6",
+            98: "F7", 100: "F8", 101: "F9", 109: "F10", 103: "F11", 111: "F12",
+            105: "F13", 107: "F14", 113: "F15", 106: "F16", 64: "F17", 79: "F18",
+            80: "F19", 90: "F20",
+        ]
+
+        static func keyName(_ event: NSEvent) -> String {
+            if let function = functionKeyCodes[event.keyCode] { return function }
+            let names: [UInt16: String] = [
+                49: "Space", 36: "↩", 48: "Tab", 51: "⌫", 117: "⌦",
+                123: "←", 124: "→", 125: "↓", 126: "↑",
+            ]
+            if let name = names[event.keyCode] { return name }
+            return event.charactersIgnoringModifiers?.uppercased() ?? ""
+        }
+    }
+}
+
+private struct PermissionBadge: View {
+    let status: String
+    let optional: Bool
+
+    var body: some View {
+        let granted = status == "granted"
+        let label = optional && !granted
+            ? "当前无需"
+            : (granted ? "已授权" : statusLabel)
+        Label(label, systemImage: granted ? "checkmark.circle.fill" : icon)
+            .font(.callout.weight(.semibold))
+            .foregroundStyle(granted ? Color.green : (optional ? Color.secondary : Color.orange))
+    }
+
+    private var statusLabel: String {
+        switch status {
+        case "not_determined": return "等待授权"
+        case "denied": return "已拒绝"
+        case "restricted": return "受到限制"
+        case "unavailable": return "无法检测"
+        default: return "未授权"
+        }
+    }
+
+    private var icon: String {
+        optional ? "minus.circle" : "exclamationmark.circle.fill"
+    }
+}
+
+private struct PermissionRow: View {
+    let title: String
+    let detail: String
+    let systemImage: String
+    let status: String
+    let required: Bool
+    let action: () -> Void
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: systemImage)
+                .font(.title2)
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 30)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.headline)
+                Text(detail)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 18)
+            if status == "granted" || !required {
+                PermissionBadge(status: status, optional: !required)
+            } else {
+                Button("授权") { action() }
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(.vertical, 8)
+    }
+}
+
+struct PermissionSetupView: View {
+    @ObservedObject var model: SettingsModel
+    let allowsDismiss: Bool
+    let onContinue: () -> Void
+    private let timer = Timer.publish(every: 0.8, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        VStack(spacing: 18) {
+            HStack(spacing: 16) {
+                Image(systemName: "waveform.circle.fill")
+                    .resizable()
+                    .scaledToFit()
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(.white, Color.accentColor)
+                    .frame(width: 68, height: 68)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("VoxType 权限")
+                        .font(.system(size: 30, weight: .bold))
+                    Text("只检测当前正在运行的 App，不按同名历史条目猜测。")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+
+            VStack(spacing: 0) {
+                PermissionRow(
+                    title: "麦克风",
+                    detail: "采集你的语音并实时发送给所选 ASR。",
+                    systemImage: "mic.fill",
+                    status: model.permissions.microphone ?? "unknown",
+                    required: true
+                ) { model.requestPermission("microphone") }
+                Divider()
+                PermissionRow(
+                    title: "辅助功能",
+                    detail: "通过兼容粘贴写入当前光标，完成后恢复原剪贴板。",
+                    systemImage: "accessibility",
+                    status: model.permissions.accessibility ?? "unknown",
+                    required: true
+                ) { model.requestPermission("accessibility") }
+                Divider()
+                PermissionRow(
+                    title: "输入监控",
+                    detail: inputMonitoringDetail,
+                    systemImage: "keyboard",
+                    status: model.permissions.inputMonitoring ?? "unknown",
+                    required: model.permissions.inputMonitoringRequired ?? true
+                ) { model.requestPermission("input_monitoring") }
+            }
+            .padding(.horizontal, 18)
+            .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 16))
+
+            identityCard
+
+            HStack {
+                Button("退出 VoxType", role: .destructive) {
+                    model.quitVoiceInput()
+                }
+                Spacer()
+                Button("检查并授权") {
+                    model.requestPermission("all", openSettings: false)
+                }
+                .buttonStyle(.bordered)
+                Button("继续") { onContinue() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!model.allRequiredPermissionsGranted)
+            }
+        }
+        .padding(28)
+        .frame(width: 650)
+        .onAppear { model.reloadPermissions() }
+        .onReceive(timer) { _ in model.reloadPermissions() }
+        .interactiveDismissDisabled(!allowsDismiss && !model.allRequiredPermissionsGranted)
+    }
+
+    private var inputMonitoringDetail: String {
+        if model.permissions.inputMonitoringRequired == false {
+            return "当前使用系统注册组合键，不读取其他按键，因此无需此权限。"
+        }
+        return "右 Option、右 Command、Fn 等单修饰键需要读取全局按键事件。"
+    }
+
+    private var identityCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label(
+                    model.permissionsMatchCurrentApp ? "已确认当前运行版本" : "正在核对当前运行版本",
+                    systemImage: model.permissionsMatchCurrentApp
+                        ? "checkmark.shield.fill" : "arrow.triangle.2.circlepath"
+                )
+                .font(.headline)
+                .foregroundStyle(model.permissionsMatchCurrentApp ? Color.green : Color.orange)
+                Spacer()
+                Text("PID \(model.permissions.pid.map(String.init) ?? "—")")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Text("VoxType v\(model.permissions.version ?? "—") · \(model.permissions.bundleIdentifier ?? "—")")
+                .font(.callout.weight(.medium))
+            Text(model.permissions.bundlePath ?? model.appPath)
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .textSelection(.enabled)
+            Text("可执行文件指纹：\(model.permissions.executableFingerprint ?? "—")")
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+            Text("以上状态由该 PID 的主程序直接读取。旧版本即使同名且已授权，也不会让当前版本显示为已授权。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(16)
+        .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
+    }
+}
+
+struct VocabularyEditorView: View {
+    @Binding var vocabulary: String
+    @Environment(\.dismiss) private var dismiss
+    @State private var draft = ""
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("提高专有名词的识别准确率")
+                        .font(.headline)
+                    Text("每行填写一个容易被误识别的人名、品牌名、产品名、项目代号或行业术语。只添加确实容易出错的词；过多常用词可能降低整体准确率。")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Text("千问会直接发送该词表；豆包会发送词汇提示和精确拼写规则。需要更强的豆包效果时，请在“引擎”中填写热词表 ID。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                TextEditor(text: $draft)
+                    .font(.body.monospaced())
+                    .padding(8)
+                    .scrollContentBackground(.hidden)
+                    .background(Color(nsColor: .textBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
+                    }
+                HStack {
+                    Text("共 \(termCount) 个词")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("取消") { dismiss() }
+                    Button("完成") {
+                        vocabulary = normalizedDraft
+                        dismiss()
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+            .padding(20)
+            .navigationTitle("识别词汇")
+        }
+        .frame(width: 560, height: 430)
+        .onAppear { draft = vocabulary }
+    }
+
+    private var normalizedDraft: String {
+        draft.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+    }
+
+    private var termCount: Int {
+        Set(
+            draft.components(separatedBy: .newlines)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+                .filter { !$0.isEmpty && !$0.hasPrefix("#") }
+        ).count
+    }
+}
+
+struct GeneralSettingsView: View {
+    @ObservedObject var model: SettingsModel
+    @Binding var showPermissions: Bool
+    @Binding var showVocabulary: Bool
+
+    var body: some View {
+        Form {
+            Section("语音快捷键") {
+                LabeledContent("快捷键") {
+                    HotkeyRecorder(
+                        spec: $model.hotkeySpec,
+                        label: $model.hotkeyLabel,
+                        captureLockURL: model.shortcutCaptureURL
+                    )
+                }
+                Picker("操作方式", selection: $model.hotkeyMode) {
+                    Text("按住说话，松开结束").tag("hold")
+                    Text("按一下开始，再按一下结束").tag("toggle")
+                }
+                Text("修改后点击右上角“保存并重启”才会生效。Karabiner 用户应按映射后的系统按键配置。")
+                    .foregroundStyle(.secondary)
+                    .font(.callout)
+            }
+
+            Section("输出") {
+                Picker("标点", selection: $model.punctuationMode) {
+                    Text("保留自动标点").tag("auto")
+                    Text("替换为空格，保留问号").tag("spaces")
+                    Text("删除所有标点").tag("none")
+                }
+                LabeledContent("识别词汇") {
+                    Button {
+                        showVocabulary = true
+                    } label: {
+                        Text(model.customVocabularyCount == 0
+                            ? "添加…"
+                            : "管理 \(model.customVocabularyCount) 个词…")
+                    }
+                }
+                Text("词汇会在本机保存，并按当前引擎支持的方式随识别请求发送。修改后请保存并重启。")
+                    .foregroundStyle(.secondary)
+                    .font(.callout)
+            }
+
+            if model.isBundled {
+                Section("应用") {
+                    Toggle("登录后自动启动", isOn: $model.launchAtLogin)
+                    HStack(spacing: 10) {
+                        Label(
+                            model.allRequiredPermissionsGranted ? "权限完整" : "权限需要处理",
+                            systemImage: model.allRequiredPermissionsGranted
+                                ? "checkmark.shield.fill" : "exclamationmark.shield.fill"
+                        )
+                        .foregroundStyle(
+                            model.allRequiredPermissionsGranted ? Color.green : Color.orange
+                        )
+                        Spacer()
+                        Button("管理权限…") { showPermissions = true }
+                    }
+                    Button("退出 VoxType", role: .destructive) {
+                        model.quitVoiceInput()
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+}
+
+struct EngineSettingsView: View {
+    @ObservedObject var model: SettingsModel
+    @State private var showQwenKey = false
+    @State private var showDoubaoToken = false
+
+    var body: some View {
+        Form {
+            Section("语音引擎") {
+                Picker("当前引擎", selection: $model.transcriptionService) {
+                    Text("千问").tag("qwen")
+                    Text("豆包").tag("doubao")
+                }
+                .pickerStyle(.segmented)
+                Text("两种引擎共用快捷键、标点、光标写入和本机纠错。切换后需要保存并重启。")
+                    .foregroundStyle(.secondary)
+                    .font(.callout)
+            }
+
+            if model.transcriptionService == "qwen" {
+                Section("千问 API 连接") {
+                    Text("当前模型：Qwen Audio 3.0 ASR Streaming")
+                        .foregroundStyle(.secondary)
+                        .font(.callout)
+                    Group {
+                        if showQwenKey {
+                            TextField("API Key", text: $model.qwenAPIKey)
+                        } else {
+                            SecureField("API Key", text: $model.qwenAPIKey)
+                        }
+                    }
+                    .textFieldStyle(.roundedBorder)
+                    Toggle("显示 API Key", isOn: $showQwenKey)
+                    TextField("OpenAI compatible API 地址", text: $model.qwenAPIHost)
+                        .textFieldStyle(.roundedBorder)
+                    Text("API 地址为必填项，必须与 API Key 的地域、业务空间或套餐匹配。优先复制百炼 API Key 页面展示的 OpenAI compatible 地址；地址不匹配会认证失败。")
+                        .foregroundStyle(.secondary)
+                        .font(.callout)
+                    Link("打开百炼 API Key 页面", destination: URL(string: "https://bailian.console.aliyun.com/?tab=model#/api-key")!)
+                }
+
+                Section("识别") {
+                    Picker("地域", selection: $model.qwenRegion) {
+                        Text("中国内地（北京）").tag("beijing")
+                        Text("新加坡").tag("singapore")
+                    }
+                    Picker("识别语言", selection: $model.qwenLanguage) {
+                        Text("中文优先").tag("zh")
+                        Text("自动判断").tag("auto")
+                        Text("粤语").tag("yue")
+                        Text("英语").tag("en")
+                    }
+                }
+            } else {
+                Section("豆包 Seed ASR 2.0") {
+                    TextField("App ID", text: $model.doubaoAppKey)
+                        .textFieldStyle(.roundedBorder)
+                    Group {
+                        if showDoubaoToken {
+                            TextField("Access Token", text: $model.doubaoAccessKey)
+                        } else {
+                            SecureField("Access Token", text: $model.doubaoAccessKey)
+                        }
+                    }
+                    .textFieldStyle(.roundedBorder)
+                    Toggle("显示 Access Token", isOn: $showDoubaoToken)
+                    TextField("热词表 ID（可选加强）", text: $model.doubaoBoostingTableID)
+                        .textFieldStyle(.roundedBorder)
+                    Link("打开火山引擎语音应用", destination: URL(string: "https://console.volcengine.com/speech/app")!)
+                    Link("查看豆包热词表配置说明", destination: URL(string: "https://www.volcengine.com/docs/6561/155739?lang=zh")!)
+                    Text("应用需开通“豆包流式语音识别模型 2.0 小时版”。本机识别词汇会直接随请求发送；如果还需要更稳定的热词偏置，可在火山引擎自学习平台创建词表，并将其 ID 填在上方。")
+                        .foregroundStyle(.secondary)
+                        .font(.callout)
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+struct CorrectionsSettingsView: View {
+    @ObservedObject var model: SettingsModel
+    @State private var selection = Set<String>()
+    @State private var confirmingClear = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Form {
+                Section("本机自动纠错") {
+                    Toggle("自动检测语音后的人工修改", isOn: $model.learningEnabled)
+                    Toggle("下次识别到相同错误时自动替换", isOn: $model.autoReplaceEnabled)
+                    Toggle("高频纠错额外提示当前引擎", isOn: $model.learnedContextEnabled)
+                    Text("人工修改只保存在本机；高频纠错会转换为当前引擎的识别提示和本地替换规则，减少相同错误再次发生。")
+                        .foregroundStyle(.secondary)
+                        .font(.callout)
+                }
+            }
+            .formStyle(.grouped)
+            .frame(height: 230)
+
+            Divider()
+
+            if model.corrections.isEmpty {
+                VStack(spacing: 10) {
+                    Image(systemName: "text.badge.checkmark")
+                        .font(.system(size: 34))
+                        .foregroundStyle(.secondary)
+                    Text("还没有学习记录").font(.headline)
+                    Text("语音输入后直接修改错误文字，停顿约两秒即可自动学习。")
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                Table(model.corrections, selection: $selection) {
+                    TableColumn("识别错误", value: \.wrong)
+                    TableColumn("人工改为", value: \.correct)
+                    TableColumn("次数") { Text("\($0.count)") }.width(55)
+                    TableColumn("最近纠正") {
+                        Text(($0.lastSeen ?? "").replacingOccurrences(of: "T", with: " ").prefix(16))
+                    }.width(130)
+                }
+            }
+
+            HStack {
+                Button {
+                    model.undoLastCorrection()
+                } label: { Label("撤销最近学习", systemImage: "arrow.uturn.backward") }
+                .disabled(!model.canUndoCorrection)
+                Button {
+                    model.reloadCorrections()
+                } label: { Label("刷新", systemImage: "arrow.clockwise") }
+                Button(role: .destructive) {
+                    model.deleteCorrections(ids: selection)
+                    selection.removeAll()
+                } label: { Label("删除", systemImage: "trash") }
+                .disabled(selection.isEmpty)
+                Spacer()
+                Button("清空词库", role: .destructive) { confirmingClear = true }
+                    .disabled(model.corrections.isEmpty)
+            }
+            .padding(12)
+        }
+        .navigationTitle("共享纠错")
+        .confirmationDialog("确定清空全部纠错记录？", isPresented: $confirmingClear) {
+            Button("清空词库", role: .destructive) { model.clearCorrections() }
+        }
+    }
+}
+
+struct RecoverySettingsView: View {
+    @ObservedObject var model: SettingsModel
+    @State private var selection = Set<String>()
+    @State private var confirmingClear = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Form {
+                Section("未写入文字") {
+                    Text("只有在录音期间焦点改变、目标输入框拒绝写入或千问连接中断时，最多保留最近 5 条。最终文字会短暂进入系统剪贴板，粘贴后恢复原内容。")
+                        .foregroundStyle(.secondary)
+                        .font(.callout)
+                }
+                Section("诊断") {
+                    LabeledContent("版本") { Text(model.diagnostics.version ?? "未知") }
+                    LabeledContent("状态") { Text(model.diagnostics.state ?? "未运行") }
+                    LabeledContent("麦克风") { Text(model.diagnostics.microphone ?? "未知") }
+                    LabeledContent("采样率") {
+                        Text(model.diagnostics.sampleRate.map { "\($0) Hz" } ?? "未知")
+                    }
+                    LabeledContent("快捷键") {
+                        Text(model.diagnostics.hotkey ?? model.hotkeyLabel)
+                    }
+                    LabeledContent("键盘模式") {
+                        Text(backendLabel(model.diagnostics.hotkeyBackend ?? model.hotkeyBackend))
+                    }
+                    if let error = model.diagnostics.lastError, !error.isEmpty {
+                        LabeledContent("最近错误") { Text(error).foregroundStyle(.red) }
+                    }
+                    if let outcome = model.diagnostics.lastSessionOutcome {
+                        LabeledContent("最近一轮") {
+                            Text(sessionOutcomeLabel(outcome))
+                        }
+                    }
+                    if let audio = model.diagnostics.lastSessionAudioMs,
+                       let voiced = model.diagnostics.lastSessionVoicedMs {
+                        LabeledContent("音频 / 有声") {
+                            Text("\(audio) ms / \(voiced) ms")
+                        }
+                    }
+                    if let previews = model.diagnostics.lastSessionPreviewCount {
+                        LabeledContent("流式预览") {
+                            if let latency = model.diagnostics.lastSessionFirstPreviewMs {
+                                Text("\(previews) 次 · 首次 \(latency) ms")
+                            } else {
+                                Text("\(previews) 次")
+                            }
+                        }
+                    }
+                    HStack {
+                        Button("刷新诊断") { model.reloadDiagnostics() }
+                        Button("打开运行数据文件夹") { NSWorkspace.shared.open(model.dataURL) }
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            .frame(height: 220)
+
+            Divider()
+            if model.recoveries.isEmpty {
+                VStack(spacing: 10) {
+                    Image(systemName: "checkmark.circle")
+                        .font(.system(size: 34))
+                        .foregroundStyle(.green)
+                    Text("没有待恢复的文字").font(.headline)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                Table(model.recoveries, selection: $selection) {
+                    TableColumn("文字") { entry in
+                        Text(entry.text).lineLimit(2)
+                    }
+                    TableColumn("原因", value: \.reason).width(150)
+                    TableColumn("时间") {
+                        Text(entryDate($0.timestamp))
+                    }.width(130)
+                }
+            }
+
+            HStack {
+                Button {
+                    model.reloadRecoveries()
+                } label: { Label("刷新", systemImage: "arrow.clockwise") }
+                Button("复制选中") {
+                    if let id = selection.first,
+                       let entry = model.recoveries.first(where: { $0.id == id }) {
+                        model.copyRecovery(entry)
+                    }
+                }
+                .disabled(selection.count != 1)
+                Button(role: .destructive) {
+                    model.deleteRecoveries(ids: selection)
+                    selection.removeAll()
+                } label: { Label("删除", systemImage: "trash") }
+                .disabled(selection.isEmpty)
+                Spacer()
+                Button("清空", role: .destructive) { confirmingClear = true }
+                    .disabled(model.recoveries.isEmpty)
+            }
+            .padding(12)
+        }
+        .navigationTitle("恢复与诊断")
+        .confirmationDialog("确定清空全部恢复记录？", isPresented: $confirmingClear) {
+            Button("清空", role: .destructive) { model.clearRecoveries() }
+        }
+    }
+
+    private func entryDate(_ value: String) -> String {
+        String(value.replacingOccurrences(of: "T", with: " ").prefix(16))
+    }
+
+    private func sessionOutcomeLabel(_ outcome: String) -> String {
+        switch outcome {
+        case "committed": return "已写入"
+        case "cancelled": return "已取消"
+        case "network_error": return "网络错误"
+        case "not_committed": return "未写入（可恢复）"
+        case "no_safe_result": return "未检测到可提交语音"
+        default: return outcome
+        }
+    }
+
+    private func backendLabel(_ backend: String) -> String {
+        switch backend {
+        case "registered": return "系统注册组合键"
+        case "passive": return "只读监听（企业兼容）"
+        case "off": return "已关闭；使用菜单栏"
+        default: return backend
+        }
+    }
+}
+
+struct SettingsRootView: View {
+    @ObservedObject var model: SettingsModel
+    @State private var showPermissions = false
+    @State private var showVocabulary = false
+    @State private var evaluatedPermissionGate = false
+    private let permissionTimer = Timer.publish(
+        every: 1.0, on: .main, in: .common
+    ).autoconnect()
+
+    var body: some View {
+        TabView {
+            GeneralSettingsView(
+                model: model,
+                showPermissions: $showPermissions,
+                showVocabulary: $showVocabulary
+            )
+                .tabItem { Label("设置", systemImage: "slider.horizontal.3") }
+            EngineSettingsView(model: model)
+                .tabItem { Label("引擎", systemImage: "waveform.badge.magnifyingglass") }
+        }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    model.saveAndRestart()
+                } label: {
+                    Text("保存并重启")
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut("s", modifiers: .command)
+            }
+        }
+        .padding(.top, 8)
+        .frame(width: 660, height: 500)
+        .onAppear {
+            model.reloadDiagnostics()
+            model.reloadPermissions()
+            evaluatePermissionGate()
+        }
+        .onReceive(permissionTimer) { _ in
+            model.reloadDiagnostics()
+            model.reloadPermissions()
+            evaluatePermissionGate()
+        }
+        .sheet(isPresented: $showPermissions) {
+            PermissionSetupView(
+                model: model,
+                allowsDismiss: false,
+                onContinue: { showPermissions = false }
+            )
+        }
+        .sheet(isPresented: $showVocabulary) {
+            VocabularyEditorView(vocabulary: $model.customVocabulary)
+        }
+        .alert("设置已保存", isPresented: Binding(
+            get: { model.notice != nil },
+            set: { if !$0 { model.notice = nil } }
+        )) {
+            Button("好") { model.notice = nil }
+        } message: {
+            Text(model.notice ?? "")
+        }
+        .alert("无法保存", isPresented: Binding(
+            get: { model.errorMessage != nil },
+            set: { if !$0 { model.errorMessage = nil } }
+        )) {
+            Button("好") { model.errorMessage = nil }
+        } message: {
+            Text(model.errorMessage ?? "")
+        }
+    }
+
+    private func evaluatePermissionGate() {
+        guard model.isBundled,
+              model.permissionsLoaded,
+              !evaluatedPermissionGate
+        else { return }
+        // A snapshot from another PID/version/path is deliberately treated as
+        // untrusted even if every boolean inside it says "granted".
+        evaluatedPermissionGate = true
+        showPermissions = !model.allRequiredPermissionsGranted
+    }
+}
+
+@main
+struct VoiceInputSettingsApp: App {
+    @NSApplicationDelegateAdaptor(SettingsAppDelegate.self) private var appDelegate
+    @StateObject private var model = SettingsModel()
+
+    var body: some Scene {
+        WindowGroup("语音输入设置") {
+            SettingsRootView(model: model)
+                .onAppear {
+                    bringSettingsToFront()
+                }
+        }
+        .defaultSize(width: 660, height: 500)
+        .windowResizability(.contentSize)
+        .commands {
+            CommandGroup(replacing: .newItem) { }
+        }
+    }
+
+    private func bringSettingsToFront() {
+        let activate: () -> Void = { raiseSettingsWindows() }
+        DispatchQueue.main.async(execute: activate)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: activate)
+    }
+}

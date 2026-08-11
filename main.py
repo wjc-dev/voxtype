@@ -1,0 +1,530 @@
+"""Qwen/Doubao macOS system-wide voice input application."""
+
+from __future__ import annotations
+
+import asyncio
+import io
+import os
+import sys
+import threading
+import time
+import uuid
+from dataclasses import dataclass, field
+from typing import Any, Optional
+
+import numpy as np
+from dotenv import load_dotenv
+
+from src.runtime_paths import ENV_FILE, IS_FROZEN, ensure_runtime_layout
+
+ensure_runtime_layout()
+load_dotenv(ENV_FILE, override=True)
+
+from src.audio.archive import AudioArchiveManager
+from src.audio.recorder import AudioRecorder
+from src.diagnostics import DiagnosticsStore
+from src.keyboard.inputState import InputState
+from src.keyboard.listener import KeyboardManager, check_accessibility_permissions
+from src.permissions import PermissionMonitor
+from src.text_processing import (
+    clean_spoken_disfluencies,
+    format_transcription_text,
+    has_sufficient_speech,
+    is_context_echo,
+    sanitize_inline_text,
+)
+from src.transcription.doubao_streaming import DoubaoStreamingProcessor
+from src.transcription.qwen_streaming import QwenStreamingProcessor
+from src.ui.floating_preview import FloatingPreviewWindow
+from src.ui.status_bar import StatusBarController
+from src.utils.logger import logger
+
+
+__version__ = "0.1.0"
+__author__ = "Mor-Li"
+__description__ = "Qwen and Doubao realtime voice input for macOS"
+
+
+@dataclass
+class VoiceSession:
+    """All mutable state belonging to exactly one push-to-talk utterance."""
+
+    session_id: str
+    output_target: object
+    cancelled: bool = False
+    final_emitted: bool = False
+    completed: bool = False
+    latest_preview: str = ""
+    archive_path: Optional[str] = None
+    started_at: float = field(default_factory=time.monotonic)
+    preview_count: int = 0
+    first_preview_ms: Optional[int] = None
+    total_audio_ms: int = 0
+    voiced_audio_ms: int = 0
+    final_committed: bool = False
+    outcome: str = "recording"
+    lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
+
+
+def check_microphone_permissions() -> None:
+    logger.warning("请在系统设置 → 隐私与安全性 → 麦克风中允许 VoxType")
+
+
+class VoiceAssistant:
+    """Coordinate one cloud-ASR streaming session at a time."""
+
+    def __init__(self, processor: Optional[Any], service: str = "qwen") -> None:
+        self.audio_recorder = AudioRecorder()
+        self.audio_archive = AudioArchiveManager()
+        self.diagnostics = DiagnosticsStore()
+        self.processor = processor
+        self.service = service if service in {"qwen", "doubao"} else "qwen"
+        self.engine_label = "豆包" if self.service == "doubao" else "千问"
+        self.punctuation_mode = os.getenv("PUNCTUATION_MODE", "auto").lower()
+        self.archive_enabled = os.getenv("AUDIO_ARCHIVE_ENABLED", "false").lower() == "true"
+
+        self._current_state = InputState.IDLE
+        self._session_lock = threading.RLock()
+        self._current_session: Optional[VoiceSession] = None
+        self._streaming_thread: Optional[threading.Thread] = None
+
+        self.floating_preview = FloatingPreviewWindow()
+
+        configured = bool(processor and processor.is_available())
+        self.keyboard_manager = KeyboardManager(
+            on_record_start=self.start_streaming if configured else self._start_unconfigured,
+            on_record_stop=self.stop_streaming if configured else self._stop_unconfigured,
+            on_record_cancel=self.cancel_streaming,
+            on_state_change=self._on_state_change,
+        )
+        self.permission_monitor = PermissionMonitor(
+            version=__version__,
+            hotkey_backend=getattr(self.keyboard_manager, "_hotkey_backend", "passive"),
+        )
+        self.status_controller = StatusBarController(
+            on_restart=self._restart_application,
+            open_settings_on_start=(
+                not bool(processor)
+                or (
+                    IS_FROZEN
+                    and "--background-login" not in sys.argv
+                    and os.getenv("VOICE_INPUT_RESTARTING") != "true"
+                )
+            ),
+        )
+        self.audio_recorder.set_auto_stop_callback(self._handle_auto_stop)
+        self.audio_recorder.set_device_disconnect_callback(self._handle_device_disconnect)
+        self.diagnostics.update(
+            version=__version__,
+            engine=self.service,
+            state=InputState.IDLE.name,
+            microphone=self.audio_recorder.current_device or "未知",
+            sample_rate=self.audio_recorder.sample_rate,
+            hotkey=self.keyboard_manager.voice_hotkey_label
+            or self.keyboard_manager._voice_hotkey_display_label(),
+            hotkey_backend=getattr(self.keyboard_manager, "_hotkey_backend", "passive"),
+            archive_enabled=self.archive_enabled,
+            last_error="",
+        )
+        self._notify_status()
+
+        logger.info(
+            "语音引擎：%s；标点模式：%s；本地录音存档：%s",
+            self.engine_label,
+            self.punctuation_mode,
+            "开启" if self.archive_enabled else "关闭",
+        )
+
+    @staticmethod
+    def _restart_application() -> None:
+        logger.info("设置已保存，正在重启语音输入服务")
+        os.environ["VOICE_INPUT_RESTARTING"] = "true"
+        os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
+
+    def _on_state_change(self, state: InputState) -> None:
+        self._current_state = state
+        self.diagnostics.update(state=state.name)
+        self._notify_status()
+
+    def _notify_status(self) -> None:
+        try:
+            self.status_controller.update_state(self._current_state)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("更新状态栏失败: %s", exc)
+
+    def _start_unconfigured(self) -> None:
+        self.keyboard_manager.show_warning(f"请先在设置中填写{self.engine_label}凭证")
+        self.status_controller.open_settings()
+
+    def _stop_unconfigured(self) -> None:
+        self.keyboard_manager.reset_state()
+
+    def _is_current(self, session: VoiceSession) -> bool:
+        with self._session_lock:
+            return self._current_session is session
+
+    def _finish_session(self, session: VoiceSession) -> None:
+        with session.lock:
+            if session.completed:
+                return
+            session.completed = True
+        if not self._is_current(session):
+            return
+        with self._session_lock:
+            if self._current_session is session:
+                self._current_session = None
+        self.floating_preview.hide()
+        self.keyboard_manager.reset_state()
+
+    def _record_session_diagnostics(self, session: VoiceSession, outcome: str) -> None:
+        """Persist non-content quality signals for troubleshooting.
+
+        Never store the recognized text, context, target application, API Key,
+        or a session identifier. These coarse metrics are enough to distinguish
+        microphone gating, network preview, and final insertion failures.
+        """
+        with session.lock:
+            session.outcome = outcome
+            values = {
+                "last_session_outcome": outcome,
+                "last_session_audio_ms": int(session.total_audio_ms),
+                "last_session_voiced_ms": int(session.voiced_audio_ms),
+                "last_session_preview_count": int(session.preview_count),
+                "last_session_first_preview_ms": session.first_preview_ms,
+                "last_session_committed": bool(session.final_committed),
+            }
+        self.diagnostics.update(**values)
+
+    @staticmethod
+    def _buffer_to_bytes(audio_buffer: Optional[io.BytesIO]) -> Optional[bytes]:
+        if audio_buffer is None:
+            return None
+        try:
+            audio_buffer.seek(0)
+            return audio_buffer.read()
+        finally:
+            try:
+                audio_buffer.close()
+            except Exception:
+                pass
+
+    def _archive_buffer(self, session: VoiceSession, audio_buffer: Optional[io.BytesIO]) -> None:
+        audio_bytes = self._buffer_to_bytes(audio_buffer)
+        if not audio_bytes or not self.archive_enabled or session.cancelled:
+            return
+        session.archive_path = self.audio_archive.save_audio_bytes(audio_bytes)
+
+    def _save_transcription_cache(self, session: VoiceSession, text: str) -> None:
+        if not self.archive_enabled or not session.archive_path or not text:
+            return
+        self.audio_archive.save_transcription_result(
+            session.archive_path,
+            text,
+            service=self.service,
+            model=getattr(self.processor, "model_name", self.service),
+            mode="transcriptions",
+        )
+
+    def start_streaming(self) -> None:
+        """Start a new ASR session after the event-tap transition is serialized."""
+        if not self.processor or not self.processor.is_available():
+            self._start_unconfigured()
+            return
+        with self._session_lock:
+            if self._current_session is not None:
+                logger.warning("上一轮语音会话尚未结束，已忽略重复启动")
+                self.keyboard_manager.reset_state()
+                return
+            if self._streaming_thread and self._streaming_thread.is_alive():
+                logger.warning("上一轮%s连接仍在清理，已忽略本次启动", self.engine_label)
+                self.keyboard_manager.reset_state()
+                return
+
+            target = self.keyboard_manager.capture_output_target()
+            session = VoiceSession(uuid.uuid4().hex, target)
+            self._current_session = session
+
+        if target is None:
+            logger.warning("未能锁定当前输入框；识别结果不会写入其他窗口")
+        else:
+            logger.info("已锁定本轮语音输出目标")
+
+        try:
+            error = self.audio_recorder.start_streaming_recording()
+            if error:
+                raise RuntimeError(str(error))
+        except Exception as exc:  # noqa: BLE001
+            logger.error("启动录音失败: %s", exc)
+            self.diagnostics.update(last_error="麦克风启动失败")
+            self.keyboard_manager.show_error("麦克风启动失败")
+            self._finish_session(session)
+            return
+
+        self.keyboard_manager.mark_streaming()
+        self.diagnostics.update(
+            microphone=self.audio_recorder.current_device or "未知",
+            sample_rate=self.audio_recorder.sample_rate,
+            target_locked=target is not None,
+            last_error="",
+        )
+        thread = threading.Thread(
+            target=self._streaming_thread_main,
+            args=(session,),
+            name=f"{self.service}-stream-{session.session_id[:8]}",
+            daemon=True,
+        )
+        self._streaming_thread = thread
+        thread.start()
+
+    def _streaming_thread_main(self, session: VoiceSession) -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(self._run_streaming(session))
+        except Exception as exc:  # noqa: BLE001
+            logger.error("%s流式线程异常: %s", self.engine_label, exc, exc_info=True)
+            if self._is_current(session) and not session.cancelled:
+                self.keyboard_manager.show_error(f"{self.engine_label}连接异常")
+                self._finish_session(session)
+        finally:
+            loop.close()
+            if self._streaming_thread is threading.current_thread():
+                self._streaming_thread = None
+
+    async def _run_streaming(self, session: VoiceSession) -> None:
+        """Stream audio, preview cumulative text, and commit one final result."""
+        if not self._is_current(session) or session.cancelled:
+            return
+
+        self.floating_preview.show()
+        total_audio_ms = 0.0
+        voiced_audio_ms = 0.0
+        voice_gate_open = False
+        stream_failed = False
+
+        def env_float(name: str, default: float, minimum: float) -> float:
+            try:
+                return max(minimum, float(os.getenv(name, str(default))))
+            except ValueError:
+                return default
+
+        voice_rms_threshold = env_float("VOICE_RMS_THRESHOLD", 60.0, 20.0)
+        minimum_voiced_ms = env_float("MINIMUM_VOICED_AUDIO_MS", 100.0, 60.0)
+        minimum_total_ms = env_float("MINIMUM_AUDIO_MS", 180.0, 100.0)
+
+        # Build a fresh processor so a cancelled WebSocket cannot leak callbacks
+        # or internal connection state into the next utterance.
+        processor = type(self.processor)()
+        recognition_context = processor.recognition_context()
+
+        def active() -> bool:
+            return self._is_current(session) and not session.cancelled
+
+        def prepare_text(text: str) -> str:
+            formatted = format_transcription_text(text, self.punctuation_mode)
+            cleaned = clean_spoken_disfluencies(formatted)
+            return sanitize_inline_text(cleaned)
+
+        def output_is_safe(text: str) -> bool:
+            if not has_sufficient_speech(
+                total_audio_ms,
+                voiced_audio_ms,
+                minimum_total_ms,
+                minimum_voiced_ms,
+            ):
+                logger.warning(
+                    "已拦截极短或静音结果（音频 %.0fms，语音 %.0fms）",
+                    total_audio_ms,
+                    voiced_audio_ms,
+                )
+                return False
+            if is_context_echo(text, recognition_context):
+                logger.error("已拦截疑似个性化上下文回显")
+                return False
+            return True
+
+        def emit_final(text: str) -> bool:
+            if not active() or not output_is_safe(text):
+                return False
+            text = prepare_text(text)
+            if not text:
+                return False
+            with session.lock:
+                if session.final_emitted or session.cancelled:
+                    logger.warning("已忽略本轮重复的最终回调")
+                    return False
+                session.final_emitted = True
+            self._save_transcription_cache(session, text)
+            inserted = self.keyboard_manager.type_text(
+                text,
+                target=session.output_target,
+            )
+            with session.lock:
+                session.final_committed = inserted
+            logger.info(
+                "本轮最终结果处理完成（%d 个字符，写入=%s）",
+                len(text),
+                inserted,
+            )
+            return inserted
+
+        def on_preview_text(text: str) -> None:
+            if not active() or not voice_gate_open:
+                return
+            if is_context_echo(text, recognition_context):
+                return
+            preview = prepare_text(text)
+            if not preview:
+                return
+            with session.lock:
+                session.latest_preview = preview
+                session.preview_count += 1
+                if session.first_preview_ms is None:
+                    session.first_preview_ms = int(
+                        (time.monotonic() - session.started_at) * 1000
+                    )
+            self.floating_preview.update_text(preview)
+
+        def on_final_text(text: str) -> None:
+            if not stream_failed:
+                emit_final(text)
+
+        def on_complete() -> None:
+            if active():
+                logger.info("%s流式识别完成", self.engine_label)
+                with session.lock:
+                    committed = session.final_committed
+                    had_preview = session.preview_count > 0
+                outcome = "committed" if committed else (
+                    "no_safe_result" if not had_preview else "not_committed"
+                )
+                self._record_session_diagnostics(session, outcome)
+                self._finish_session(session)
+
+        def on_error(error: str) -> None:
+            nonlocal stream_failed
+            if stream_failed or not active():
+                return
+            stream_failed = True
+            logger.error("%s流式识别失败: %s", self.engine_label, error)
+            self.diagnostics.update(last_error=f"{self.engine_label}识别失败")
+            with session.lock:
+                recovery = session.latest_preview
+            if recovery and output_is_safe(recovery):
+                self.keyboard_manager.retain_recovery_text(
+                    recovery, f"{self.engine_label}连接中断"
+                )
+            else:
+                self.keyboard_manager.show_error(f"{self.engine_label}识别失败")
+            self.audio_recorder.reset_streaming_state(
+                reason=f"{self.engine_label}流式错误"
+            )
+            self._record_session_diagnostics(session, "network_error")
+            self._finish_session(session)
+
+        async def audio_chunks_with_levels():
+            nonlocal total_audio_ms, voiced_audio_ms, voice_gate_open
+            async for chunk in self.audio_recorder.stream_audio_chunks(
+                chunk_duration_ms=100,
+                target_sample_rate=16000,
+            ):
+                if not active():
+                    return
+                samples = np.frombuffer(chunk, dtype=np.int16)
+                if samples.size:
+                    rms = float(np.sqrt(np.mean(samples.astype(np.float32) ** 2)))
+                    chunk_ms = samples.size / 16.0
+                    total_audio_ms += chunk_ms
+                    if rms >= voice_rms_threshold:
+                        voiced_audio_ms += chunk_ms
+                    voice_gate_open = has_sufficient_speech(
+                        total_audio_ms,
+                        voiced_audio_ms,
+                        minimum_total_ms,
+                        minimum_voiced_ms,
+                    )
+                    with session.lock:
+                        session.total_audio_ms = int(total_audio_ms)
+                        session.voiced_audio_ms = int(voiced_audio_ms)
+                    normalized = max(0.0, min(1.0, (rms - 35.0) / 850.0))
+                    self.floating_preview.update_level(normalized ** 0.5 if normalized else 0.0)
+                yield chunk
+
+        await processor.process_audio_stream(
+            audio_chunks_with_levels(),
+            on_preview_text,
+            on_final_text,
+            on_complete,
+            on_error,
+            sample_rate=16000,
+        )
+
+    def stop_streaming(self) -> None:
+        with self._session_lock:
+            session = self._current_session
+        if session is None or session.cancelled:
+            self.keyboard_manager.reset_state()
+            return
+        logger.info("停止本轮%s录音", self.engine_label)
+        audio = self.audio_recorder.stop_streaming_recording()
+        self._archive_buffer(session, audio)
+
+    def cancel_streaming(self) -> None:
+        with self._session_lock:
+            session = self._current_session
+        if session is None:
+            self.audio_recorder.stop_streaming_recording(abort=True)
+            return
+        with session.lock:
+            session.cancelled = True
+        self.audio_recorder.stop_streaming_recording(abort=True)
+        logger.info("本轮语音输入已取消，不会提交识别结果")
+        self._record_session_diagnostics(session, "cancelled")
+        self._finish_session(session)
+
+    def _handle_auto_stop(self) -> None:
+        logger.warning("录音达到最大时长，已自动结束并提交现有音频")
+        self.stop_streaming()
+
+    def _handle_device_disconnect(self) -> None:
+        logger.warning("录音设备断开，正在提交已录制音频")
+        self.diagnostics.update(last_error="录音设备已断开")
+        self.stop_streaming()
+
+    def run(self) -> None:
+        logger.info("语音输入已启动 (v%s)", __version__)
+        self.permission_monitor.start()
+        threading.Thread(
+            target=self.keyboard_manager.start_listening,
+            name="keyboard-listener",
+            daemon=True,
+        ).start()
+        self.status_controller.start()
+
+
+def main() -> None:
+    try:
+        service = os.getenv("TRANSCRIPTION_SERVICE", "qwen").strip().lower()
+        if service == "doubao":
+            processor = DoubaoStreamingProcessor()
+        else:
+            service = "qwen"
+            processor = QwenStreamingProcessor()
+        assistant = VoiceAssistant(
+            processor if processor.is_available() else None,
+            service=service,
+        )
+        assistant.run()
+    except Exception as exc:  # noqa: BLE001
+        message = str(exc)
+        if "Input event monitoring will not be possible" in message:
+            check_accessibility_permissions()
+        elif "无法访问音频设备" in message:
+            check_microphone_permissions()
+        else:
+            logger.error("应用启动失败: %s", message, exc_info=True)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

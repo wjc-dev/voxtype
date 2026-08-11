@@ -1,0 +1,15 @@
+{
+  "version": "3.7.3",
+  "bundle_identifier": "source.python",
+  "bundle_path": "/opt/anaconda3/bin/python3.13",
+  "executable_path": "/opt/anaconda3/bin/python3.13",
+  "executable_fingerprint": "3a438c0f36ae76f5",
+  "pid": 39330,
+  "microphone": "not_determined",
+  "accessibility": "granted",
+  "input_monitoring": "granted",
+  "input_monitoring_required": true,
+  "all_required_granted": false,
+  "checked_by_current_process": true,
+  "updated_at": "2026-08-11T19:48:29+08:00"
+}

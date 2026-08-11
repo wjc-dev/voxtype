@@ -1,0 +1,27 @@
+VoxType 3.7.3（千问 / 豆包）— 内测安装说明
+
+系统要求：Apple 芯片 Mac，macOS 13 或更高版本。
+
+安装：
+1. DMG：把“VoxType”拖入“应用程序”；PKG：双击并按提示安装。
+2. 首次打开若被阻止，到“系统设置 → 隐私与安全性”点“仍要打开”。
+3. 在“引擎”页选择千问或豆包，并填写自己的服务凭证。默认使用千问。
+4. 按首次启动的权限引导完成授权。页面会显示当前版本、路径、PID 和指纹，避免把权限授给同名旧版本。
+5. 默认按住键盘右侧的 Option 说话，松开提交；默认只读监听，不会吞键。
+6. 点击菜单栏波形只打开设置，录音只由你选定的按住快捷键触发。
+
+获取千问 Key：
+https://bailian.console.aliyun.com/?tab=model#/api-key
+创建成功后立即保存完整 API Key 和 OpenAI compatible API 地址。两者必须与地域、业务空间或套餐匹配。它不是阿里云 AccessKey，也不是数字 ID。
+
+获取豆包凭证：
+https://console.volcengine.com/speech/app
+填写 App ID 和 Access Token，并为应用开通“豆包流式语音识别模型 2.0 小时版”。
+
+安全与隐私：
+- App 本体采用 ad-hoc 签名，PKG 安装器容器未签名；没有 Developer ID 和公证，仅适合可信小范围测试。
+- 不需要 Python、Homebrew 或终端。
+- 默认不保存录音，不自动发送消息。最终文字通过临时剪贴板粘贴；程序会恢复原剪贴板，并为临时内容添加隐私与不记录历史标记。
+- 配置和私人数据位于 ~/Library/Application Support/VoxType Next。
+- 不要把自己的 Key、Token 或该数据目录转发给别人。
+- 公司管控设备可能仍需管理员批准未知来源 App、辅助功能和外部 API。
