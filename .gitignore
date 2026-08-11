@@ -57,3 +57,4 @@ diagnostics.json
 # 忽略 trash 目录
 trash/
 report*/
+permissions.json
