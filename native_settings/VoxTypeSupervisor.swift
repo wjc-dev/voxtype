@@ -1,0 +1,132 @@
+import AppKit
+import Darwin
+import Foundation
+
+private let bundleIdentifier = "com.voxtype.dev"
+private let checkInterval: UInt32 = 5
+private let crashWindow: TimeInterval = 60
+private let crashLimit = 3
+private let crashCooldown: UInt32 = 300
+private let pauseURL = FileManager.default.homeDirectoryForCurrentUser
+    .appendingPathComponent("Library/Application Support/Voice Input Next/.supervisor-paused")
+
+private func log(_ message: String) {
+    let stamp = ISO8601DateFormatter().string(from: Date())
+    let data = Data("\(stamp) \(message)\n".utf8)
+    try? FileHandle.standardError.write(contentsOf: data)
+}
+
+private func enclosingAppURL() -> URL? {
+    // SMAppService may launch BundleProgram with a relative argv[0], for
+    // example "Contents/Resources/VoxTypeSupervisor". _NSGetExecutablePath
+    // resolves the actual image path regardless of launchd's working directory.
+    var bufferSize: UInt32 = 0
+    _ = _NSGetExecutablePath(nil, &bufferSize)
+    guard bufferSize > 0 else { return nil }
+    let buffer = UnsafeMutablePointer<CChar>.allocate(capacity: Int(bufferSize))
+    defer { buffer.deallocate() }
+    guard _NSGetExecutablePath(buffer, &bufferSize) == 0 else { return nil }
+
+    var current = URL(
+        fileURLWithFileSystemRepresentation: buffer,
+        isDirectory: false,
+        relativeTo: nil
+    ).resolvingSymlinksInPath().standardizedFileURL
+    while current.path != "/" {
+        if current.pathExtension == "app" { return current }
+        current.deleteLastPathComponent()
+    }
+
+    func verifiedHost(_ candidate: URL?) -> URL? {
+        guard let candidate else { return nil }
+        let resolved = candidate.resolvingSymlinksInPath().standardizedFileURL
+        guard resolved.pathExtension == "app",
+              FileManager.default.fileExists(atPath: resolved.path),
+              Bundle(url: resolved)?.bundleIdentifier == bundleIdentifier else {
+            return nil
+        }
+        return resolved
+    }
+
+    // launchd may isolate LaunchServices and preserve BundleProgram as a
+    // relative image path. Prefer a live process URL, then the documented
+    // installation locations, and only then ask LaunchServices.
+    if let liveURL = NSRunningApplication.runningApplications(
+        withBundleIdentifier: bundleIdentifier
+    ).compactMap({ $0.bundleURL }).compactMap(verifiedHost).first {
+        return liveURL
+    }
+    let standardCandidates = [
+        URL(fileURLWithPath: "/Applications/VoxType.app"),
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Applications/VoxType.app"),
+    ]
+    if let installedURL = standardCandidates.compactMap(verifiedHost).first {
+        return installedURL
+    }
+    if let registeredURL = verifiedHost(
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier)
+    ) {
+        return registeredURL
+    }
+    return nil
+}
+
+private func appIsRunning() -> Bool {
+    !NSRunningApplication.runningApplications(
+        withBundleIdentifier: bundleIdentifier
+    ).isEmpty
+}
+
+private func launch(_ appURL: URL) -> Bool {
+    let task = Process()
+    task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+    task.arguments = ["-g", appURL.path, "--args", "--background-login", "--supervised"]
+    task.standardOutput = FileHandle.nullDevice
+    task.standardError = FileHandle.standardError
+    do {
+        try task.run()
+        task.waitUntilExit()
+        return task.terminationStatus == 0
+    } catch {
+        log("launch failed: \(error.localizedDescription)")
+        return false
+    }
+}
+
+guard let appURL = enclosingAppURL() else {
+    log("cannot locate containing VoxType.app")
+    exit(78)
+}
+
+log("supervisor started for \(bundleIdentifier)")
+var launches: [Date] = []
+while true {
+    if FileManager.default.fileExists(atPath: pauseURL.path) {
+        sleep(checkInterval)
+        continue
+    }
+    if appIsRunning() {
+        sleep(checkInterval)
+        continue
+    }
+
+    let now = Date()
+    launches.removeAll { now.timeIntervalSince($0) > crashWindow }
+    if launches.count >= crashLimit {
+        log("crash loop detected; cooling down for \(crashCooldown) seconds")
+        sleep(crashCooldown)
+        launches.removeAll()
+        continue
+    }
+
+    launches.append(now)
+    if launch(appURL) {
+        log("VoxType launch requested")
+        // LaunchServices may need a few seconds to finish starting a frozen
+        // Python bundle. Do not count that normal startup time as another crash.
+        sleep(10)
+        continue
+    }
+    sleep(checkInterval)
+}

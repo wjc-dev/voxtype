@@ -38,6 +38,8 @@ from src.runtime_paths import DATA_DIR, IS_FROZEN, LOG_DIR, RESOURCE_ROOT, app_b
 
 _settings_process_lock = threading.RLock()
 _settings_process: Optional[subprocess.Popen] = None
+_status_log_lock = threading.RLock()
+_STATUS_LOG_MAX_BYTES = 512 * 1024
 
 
 @dataclass(frozen=True)
@@ -62,10 +64,23 @@ def _service_label() -> str:
 
 
 def _write_status_log(message: str) -> None:
-    os.makedirs(LOG_DIR, exist_ok=True)
-    with open(LOG_DIR / "settings_ui.log", "a", encoding="utf-8") as log_file:
-        log_file.write(f"{datetime.now().isoformat(timespec='seconds')} {message}\n")
-        log_file.flush()
+    # Diagnostics must never be able to terminate the resident app. Keep the
+    # helper log bounded and serialize rotation with writes from watcher threads.
+    try:
+        with _status_log_lock:
+            os.makedirs(LOG_DIR, exist_ok=True)
+            log_path = LOG_DIR / "settings_ui.log"
+            if log_path.exists() and log_path.stat().st_size >= _STATUS_LOG_MAX_BYTES:
+                rotated = LOG_DIR / "settings_ui.log.1"
+                rotated.unlink(missing_ok=True)
+                os.replace(log_path, rotated)
+            with open(log_path, "a", encoding="utf-8") as log_file:
+                log_file.write(
+                    f"{datetime.now().isoformat(timespec='seconds')} {message}\n"
+                )
+                log_file.flush()
+    except OSError:
+        pass
 
 
 def _current_event_type():
@@ -76,6 +91,17 @@ def _current_event_type():
 def _activate_settings_process(process: subprocess.Popen) -> bool:
     if process.poll() is not None:
         return False
+    # applicationDidFinishLaunching writes this lock only after installing the
+    # SIGUSR1 source.  A rapid second click before that handshake used to send
+    # SIGUSR1 to the default signal action and kill the helper (exit -30).
+    instance_path = DATA_DIR / ".settings-instance"
+    try:
+        ready_pid = int(instance_path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        ready_pid = 0
+    if ready_pid != process.pid:
+        _write_status_log(f"settings process warming up pid={process.pid}")
+        return True
     # The native settings helper is a Swift executable rather than a bundled
     # NSRunningApplication. Its SIGUSR1 handler is the most reliable way to
     # raise the existing window even when macOS does not expose it here.
@@ -107,11 +133,30 @@ def _launch_settings_window(on_restart=None) -> int:
     root_dir = str(RESOURCE_ROOT)
     settings_script = os.path.join(root_dir, "settings_ui.py")
     native_source = os.path.join(root_dir, "native_settings", "VoiceInputSettings.swift")
-    native_binary = (
-        os.path.join(root_dir, "native_settings", "VoiceInputSettings.appbin")
-        if IS_FROZEN
-        else os.path.join(root_dir, "build", "VoiceInputSettings")
+    native_core = os.path.join(root_dir, "native_settings", "SettingsCore.swift")
+    native_info = os.path.join(
+        root_dir, "native_settings", "VoiceInputSettings-Info.plist"
     )
+    containing_bundle = app_bundle_path() if IS_FROZEN else None
+    if containing_bundle is not None:
+        native_binary = str(
+            containing_bundle
+            / "Contents"
+            / "Helpers"
+            / "VoxTypeSettings.app"
+            / "Contents"
+            / "MacOS"
+            / "VoxTypeSettings"
+        )
+    else:
+        native_binary = os.path.join(
+            root_dir,
+            "build",
+            "VoxTypeSettings.app",
+            "Contents",
+            "MacOS",
+            "VoxTypeSettings",
+        )
     log_dir = str(LOG_DIR)
     log_path = os.path.join(log_dir, "settings_ui.log")
     os.makedirs(log_dir, exist_ok=True)
@@ -119,17 +164,16 @@ def _launch_settings_window(on_restart=None) -> int:
     executable = sys.executable
     arguments = [sys.executable, settings_script]
     try:
-        needs_build = not IS_FROZEN and (not os.path.exists(native_binary) or (
-            os.path.getmtime(native_source) > os.path.getmtime(native_binary)
-        ))
+        needs_build = not IS_FROZEN and (
+            not os.path.exists(native_binary)
+            or any(
+                os.path.getmtime(source) > os.path.getmtime(native_binary)
+                for source in (native_source, native_core, native_info)
+            )
+        )
         if needs_build:
-            os.makedirs(os.path.dirname(native_binary), exist_ok=True)
             build_result = subprocess.run(
-                [
-                    "xcrun", "swiftc", "-parse-as-library",
-                    "-framework", "SwiftUI", "-framework", "AppKit",
-                    native_source, "-o", native_binary,
-                ],
+                [os.path.join(root_dir, "build-native-settings.command")],
                 cwd=root_dir,
                 capture_output=True,
                 text=True,
@@ -150,9 +194,8 @@ def _launch_settings_window(on_restart=None) -> int:
     child_env["VOICE_INPUT_DATA_ROOT"] = str(DATA_DIR)
     child_env["VOICE_INPUT_BUNDLED"] = "true" if IS_FROZEN else "false"
     child_env["VOICE_INPUT_PARENT_PID"] = str(os.getpid())
-    bundle = app_bundle_path()
-    if bundle is not None:
-        child_env["VOICE_INPUT_APP_PATH"] = str(bundle)
+    if containing_bundle is not None:
+        child_env["VOICE_INPUT_APP_PATH"] = str(containing_bundle)
     try:
         with open(log_path, "a", encoding="utf-8") as log_file:
             process = subprocess.Popen(

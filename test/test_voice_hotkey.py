@@ -2,7 +2,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from Quartz import (
     kCGEventFlagMaskAlternate,
@@ -59,6 +59,20 @@ class VoiceHotkeyTests(unittest.TestCase):
         )
         self.assertEqual(manager.actions, ["start"])
 
+    def test_left_option_is_side_specific_and_supported(self):
+        manager = self.make_manager("left_option")
+        self.assertFalse(
+            manager._handle_configured_hotkey(
+                kCGEventFlagsChanged, 61, kCGEventFlagMaskAlternate
+            )
+        )
+        self.assertTrue(
+            manager._handle_configured_hotkey(
+                kCGEventFlagsChanged, 58, kCGEventFlagMaskAlternate
+            )
+        )
+        self.assertEqual(manager.actions, ["start"])
+
     def test_toggle_mode_starts_and_stops_on_successive_presses(self):
         manager = self.make_manager("right_option")
         manager._fn_hotkey_mode = "toggle"
@@ -91,6 +105,41 @@ class VoiceHotkeyTests(unittest.TestCase):
         manager = self.make_manager("keycode:49;mods:command")
         self.assertFalse(manager._handle_configured_hotkey(kCGEventKeyDown, 49, 0))
         self.assertEqual(manager.actions, [])
+
+    def test_registered_combo_rejects_unknown_or_missing_modifiers(self):
+        manager = self.make_manager("keycode:49;mods:control")
+
+        self.assertIsNone(manager._parse_voice_hotkey("keycode:49;mods:"))
+        self.assertIsNone(manager._parse_voice_hotkey("keycode:49;mods:hyper"))
+        self.assertIsNone(
+            manager._parse_voice_hotkey("keycode:49;mods:control+control")
+        )
+        self.assertIsNone(manager._parse_voice_hotkey("keycode:999;mods:control"))
+        self.assertIsNone(
+            manager._parse_voice_hotkey("keycode:49;keycode:40;mods:control")
+        )
+        self.assertIsNone(
+            manager._parse_voice_hotkey("keycode:49;mods:control;extra:value")
+        )
+
+    def test_registered_combo_supports_function_modifier(self):
+        manager = self.make_manager("keycode:49;mods:function")
+
+        self.assertEqual(manager._voice_hotkey_spec["mask"], 1 << 23)
+        self.assertEqual(_RegisteredHotKeyListener._CARBON_MODIFIERS["function"], 1 << 23)
+
+    def test_backend_is_derived_from_shortcut_kind_but_off_is_respected(self):
+        combo = {"kind": "key"}
+        modifier_only = {"kind": "modifier"}
+
+        self.assertEqual(
+            KeyboardManager._backend_for_hotkey(combo, "passive"), "registered"
+        )
+        self.assertEqual(
+            KeyboardManager._backend_for_hotkey(modifier_only, "registered"),
+            "passive",
+        )
+        self.assertEqual(KeyboardManager._backend_for_hotkey(combo, "off"), "off")
 
     def test_shortcut_capture_lock_temporarily_passes_current_hotkey_through(self):
         manager = self.make_manager("right_option")
@@ -171,6 +220,83 @@ class VoiceHotkeyTests(unittest.TestCase):
         self.assertEqual(listener._dispatch_kind(listener._EVENT_HOTKEY_RELEASED), 0)
 
         self.assertEqual(states, [True, False])
+
+    def test_registered_hotkey_is_ignored_while_settings_capture_is_active(self):
+        manager = self.make_manager("keycode:49;mods:control+option")
+        manager._shortcut_capture_active = lambda **_kwargs: True
+
+        manager._set_registered_hotkey_pressed(True)
+        manager._set_registered_hotkey_pressed(False)
+
+        self.assertEqual(manager.actions, [])
+
+    def test_passive_tap_repairs_disabled_tap(self):
+        listener = _PassiveTapListener(lambda *_args: None)
+        listener.tap_ref = object()
+        with (
+            patch("Quartz.CGEventTapIsEnabled", return_value=False),
+            patch("Quartz.CGEventTapEnable") as enable,
+        ):
+            self.assertTrue(listener._repair_if_disabled())
+
+        enable.assert_called_once_with(listener.tap_ref, True)
+        self.assertEqual(listener.recovery_count, 1)
+
+    def test_registered_conflict_shows_actionable_warning(self):
+        manager = self.make_manager("keycode:49;mods:control+option")
+        manager._hotkey_backend = "registered"
+        manager._shortcut_capture_active = lambda **_kwargs: False
+        manager.show_warning = MagicMock()
+        registered = MagicMock()
+        registered.start.side_effect = RuntimeError("eventHotKeyExistsErr")
+
+        with (
+            patch("src.keyboard.listener.sys.platform", "darwin"),
+            patch(
+                "src.keyboard.listener._RegisteredHotKeyListener",
+                return_value=registered,
+            ),
+        ):
+            manager.start_listening()
+
+        manager.show_warning.assert_called_once_with(
+            "组合键注册失败；请在设置中选择其他快捷键"
+        )
+
+    def test_passive_permission_failure_falls_back_and_explains_fix(self):
+        manager = self.make_manager("right_option")
+        manager._hotkey_backend = "passive"
+        manager._shortcut_capture_active = lambda **_kwargs: False
+        manager._darwin_intercept = MagicMock()
+        manager._nsevent_intercept = MagicMock()
+        manager._suppress_vks = {61}
+        manager.show_warning = MagicMock()
+
+        passive = MagicMock()
+        passive.__enter__.side_effect = RuntimeError("tap denied")
+        fallback = MagicMock()
+        fallback.start.side_effect = RuntimeError("monitor denied")
+
+        with (
+            patch("src.keyboard.listener.sys.platform", "darwin"),
+            patch(
+                "src.keyboard.listener._PassiveTapListener", return_value=passive
+            ),
+            patch(
+                "src.keyboard.listener._PassiveGlobalMonitorListener",
+                return_value=fallback,
+            ),
+            patch(
+                "PyObjCTools.AppHelper.callAfter",
+                side_effect=lambda callback: callback(),
+            ),
+        ):
+            manager.start_listening()
+
+        fallback.start.assert_called_once_with()
+        manager.show_warning.assert_called_once_with(
+            "请为 Voice Input 开启输入监控权限"
+        )
 
 
 if __name__ == "__main__":

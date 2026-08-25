@@ -25,8 +25,19 @@ Requires macOS 13+ on Apple Silicon.
 ## Configure
 
 1. Open VoxType, pick an engine (Qwen or Doubao), enter your API credentials.
-2. Default hotkey is Right Option. On tightly managed Macs, switch to `⌃⌥Space`.
+2. The default hotkey is `⌃⌥Space`. macOS registers this exact combination, so it does not need Input Monitoring permission and can report a registration conflict. Settings can record other modifier-plus-key combinations.
 3. Save and restart. Focus any input field, hold the hotkey, speak, release.
+
+Left/right Option, Command, Control, or Fn can also be used alone. Modifier-only shortcuts require a read-only keyboard monitor and Input Monitoring permission, and are more likely to conflict with macOS, remote-desktop tools, Karabiner, or managed-device security software. Prefer a combination for general reliability.
+
+## Background reliability and recovery
+
+- Packaged builds register a small supervisor through the macOS 13+ Service Management API. It relaunches a missing VoxType process, but cools down for five minutes after three failures in 60 seconds to prevent a crash loop.
+- A Quartz shortcut listener is health-checked and re-enabled when macOS disables it. Managed Macs that reject the read-only event tap fall back to an AppKit compatibility monitor.
+- The menu item uses a retained square template icon and periodic health checks. macOS may still temporarily hide third-party items when menu-bar space is exhausted. Reopen VoxType from Applications or Spotlight to raise the existing settings window without starting a second service.
+- The Recovery & Diagnostics page reports login-item status, permissions, shortcut backend, and the latest session. A running legacy Voice Input process is reported during migration so two shortcut listeners are not left active silently.
+
+Public distribution still requires a stable Developer ID signature for the App/PKG and Apple notarization. The repository's `internal` artifacts are ad-hoc-signed test builds, not a universal public release.
 
 ## Run from source
 
@@ -34,7 +45,7 @@ Requires macOS 13+ on Apple Silicon.
 git clone https://github.com/wjc-dev/voxtype.git
 cd voxtype
 uv venv --python 3.13 .venv
-uv pip install -r requirements.txt
+uv pip install -r requirements-dev.txt
 cp env.example .env          # fill in your Qwen or Doubao credentials
 .venv/bin/python main.py
 ```
@@ -48,6 +59,12 @@ zsh ./build-internal-dmg.command
 ```
 
 Output in `dist-internal/`.
+
+Before handing off a candidate, run the isolated verifier below. It executes the full test suite, rebuilds, validates the bundle signature/version, and launches a temporary copy to smoke-test the menu bar and settings window. It neither installs the app nor registers a login item.
+
+```bash
+zsh ./tools/verify-release-candidate.command
+```
 
 ## Project layout
 
@@ -66,7 +83,7 @@ test/              Unit tests
 
 ## Contributing
 
-Issues and PRs welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md). PRs must pass `pytest test/`.
+Issues and PRs welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md). PRs must pass `.venv/bin/python -m pytest test/`.
 
 ## Security
 

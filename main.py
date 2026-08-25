@@ -40,6 +40,7 @@ from src.audio.recorder import AudioRecorder
 from src.diagnostics import DiagnosticsStore
 from src.keyboard.inputState import InputState
 from src.keyboard.listener import KeyboardManager, check_accessibility_permissions
+from src.login_item import resume_supervisor_for_manual_launch, sync_login_item
 from src.permissions import PermissionMonitor
 from src.text_processing import (
     clean_spoken_disfluencies,
@@ -55,9 +56,24 @@ from src.ui.status_bar import StatusBarController
 from src.utils.logger import logger
 
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 __author__ = "Mor-Li"
 __description__ = "Qwen and Doubao realtime voice input for macOS"
+
+
+def _should_open_settings_on_start(
+    *,
+    processor_present: bool,
+    is_frozen: bool,
+    arguments: list[str],
+    restarting: bool,
+) -> bool:
+    """Only a deliberate foreground launch may open the settings window."""
+    if "--show-settings-after-restart" in arguments:
+        return True
+    if "--background-login" in arguments or restarting:
+        return False
+    return not processor_present or is_frozen
 
 
 @dataclass
@@ -92,6 +108,8 @@ class VoiceAssistant:
         self.audio_recorder = AudioRecorder()
         self.audio_archive = AudioArchiveManager()
         self.diagnostics = DiagnosticsStore()
+        login_enabled = os.getenv("LAUNCH_AT_LOGIN", "true").lower() == "true"
+        login_result = sync_login_item(login_enabled)
         self.processor = processor
         self.service = service if service in {"qwen", "doubao"} else "qwen"
         self.engine_label = "豆包" if self.service == "doubao" else "千问"
@@ -118,13 +136,11 @@ class VoiceAssistant:
         )
         self.status_controller = StatusBarController(
             on_restart=self._restart_application,
-            open_settings_on_start=(
-                not bool(processor)
-                or (
-                    IS_FROZEN
-                    and "--background-login" not in sys.argv
-                    and os.getenv("VOICE_INPUT_RESTARTING") != "true"
-                )
+            open_settings_on_start=_should_open_settings_on_start(
+                processor_present=bool(processor),
+                is_frozen=IS_FROZEN,
+                arguments=sys.argv,
+                restarting=os.getenv("VOICE_INPUT_RESTARTING") == "true",
             ),
         )
         self.audio_recorder.set_auto_stop_callback(self._handle_auto_stop)
@@ -139,7 +155,9 @@ class VoiceAssistant:
             or self.keyboard_manager._voice_hotkey_display_label(),
             hotkey_backend=getattr(self.keyboard_manager, "_hotkey_backend", "passive"),
             archive_enabled=self.archive_enabled,
-            last_error="",
+            last_error=login_result.error,
+            login_item_status=login_result.status,
+            login_item_error=login_result.error,
         )
         self._notify_status()
 
@@ -154,7 +172,15 @@ class VoiceAssistant:
     def _restart_application() -> None:
         logger.info("设置已保存，正在重启语音输入服务")
         os.environ["VOICE_INPUT_RESTARTING"] = "true"
-        os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
+        arguments = [
+            argument
+            for argument in sys.argv[1:]
+            if argument != "--show-settings-after-restart"
+        ]
+        os.execv(
+            sys.executable,
+            [sys.executable, "--show-settings-after-restart", *arguments],
+        )
 
     def _on_state_change(self, state: InputState) -> None:
         self._current_state = state
@@ -519,6 +545,7 @@ class VoiceAssistant:
 
 def main() -> None:
     try:
+        resume_supervisor_for_manual_launch(sys.argv[1:])
         service = os.getenv("TRANSCRIPTION_SERVICE", "qwen").strip().lower()
         if service == "doubao":
             processor = DoubaoStreamingProcessor()

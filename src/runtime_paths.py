@@ -52,10 +52,10 @@ def ensure_runtime_layout() -> None:
             ENV_FILE.write_text(
                 "TRANSCRIPTION_SERVICE=qwen\n"
                 "QWEN_API_KEY=\n"
-                "VOICE_HOTKEY=right_option\n"
-                "VOICE_HOTKEY_LABEL=右 Option\n"
+                "VOICE_HOTKEY=keycode:49;mods:control+option\n"
+                "VOICE_HOTKEY_LABEL=⌃⌥Space\n"
                 "FN_HOTKEY_MODE=hold\n"
-                "GLOBAL_HOTKEY_BACKEND=passive\n"
+                "GLOBAL_HOTKEY_BACKEND=registered\n"
                 "PUNCTUATION_MODE=spaces\n"
                 "AUDIO_ARCHIVE_ENABLED=false\n"
                 "DISFLUENCY_FILTER_ENABLED=false\n"

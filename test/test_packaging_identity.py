@@ -6,6 +6,18 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 class PackagingIdentityTests(unittest.TestCase):
+    def test_release_version_is_consistent(self):
+        main = (ROOT / "main.py").read_text(encoding="utf-8")
+        spec = (ROOT / "packaging" / "VoiceInput.spec").read_text(encoding="utf-8")
+        build = (ROOT / "build-internal-dmg.command").read_text(encoding="utf-8")
+        source_package = (ROOT / "package-source.command").read_text(encoding="utf-8")
+
+        self.assertIn('__version__ = "0.2.0"', main)
+        self.assertIn('version="0.2.0"', spec)
+        self.assertIn('"CFBundleShortVersionString": "0.2.0"', spec)
+        self.assertIn('VERSION="0.2.0"', build)
+        self.assertIn('PACKAGE_NAME="VoxType-v0.2.0"', source_package)
+
     def test_current_app_and_login_item_use_stable_qwen_identity(self):
         spec = (ROOT / "packaging" / "VoiceInput.spec").read_text(encoding="utf-8")
         settings = (ROOT / "native_settings" / "VoiceInputSettings.swift").read_text(
@@ -14,7 +26,14 @@ class PackagingIdentityTests(unittest.TestCase):
         build = (ROOT / "build-internal-dmg.command").read_text(encoding="utf-8")
 
         self.assertIn('bundle_identifier="com.voxtype.dev"', spec)
-        self.assertIn('"Label": "com.voxtype.dev"', settings)
+        agent = (ROOT / "packaging" / "com.voxtype.dev.agent.plist").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("com.voxtype.dev.agent", agent)
+        self.assertIn("Contents/Resources/VoxTypeSupervisor", agent)
+        self.assertIn('AGENT_PLIST_NAME = "com.voxtype.dev.agent.plist"', (
+            ROOT / "src" / "login_item.py"
+        ).read_text(encoding="utf-8"))
         self.assertIn('--identifier "com.voxtype.dev"', build)
 
     def test_old_identity_is_only_kept_for_login_item_migration(self):
@@ -41,6 +60,70 @@ class PackagingIdentityTests(unittest.TestCase):
         self.assertNotIn("permissionPID == Int(parentPID)", settings)
         self.assertIn("Darwin.kill(Int32(permissionPID), 0) == 0", settings)
         self.assertIn('appendingPathComponent("Contents/MacOS/VoxType")', settings)
+
+    def test_packaging_embeds_modern_service_management_agent(self):
+        build = (ROOT / "build-internal-dmg.command").read_text(encoding="utf-8")
+        native_build = (ROOT / "build-native-settings.command").read_text(
+            encoding="utf-8"
+        )
+        spec = (ROOT / "packaging" / "VoiceInput.spec").read_text(encoding="utf-8")
+        agent = ROOT / "packaging" / "com.voxtype.dev.agent.plist"
+
+        self.assertTrue(agent.exists())
+        self.assertIn("Contents/Library/LaunchAgents", build)
+        self.assertIn("VoxTypeSupervisor", build)
+        supervisor = (ROOT / "native_settings" / "VoxTypeSupervisor.swift").read_text(
+            encoding="utf-8"
+        )
+        settings = (ROOT / "native_settings" / "VoiceInputSettings.swift").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(".supervisor-paused", supervisor)
+        self.assertIn("paused-by-user", settings)
+        self.assertIn("NSRunningApplication.runningApplications", supervisor)
+        self.assertIn("_NSGetExecutablePath", supervisor)
+        self.assertIn("urlForApplication", supervisor)
+        self.assertIn('URL(fileURLWithPath: "/Applications/VoxType.app")', supervisor)
+        self.assertIn("Bundle(url: resolved)?.bundleIdentifier", supervisor)
+        self.assertNotIn('executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")', supervisor)
+        self.assertIn("native_settings/SettingsCore.swift", native_build)
+        self.assertIn("Contents/Helpers/VoxTypeSettings.app", build)
+        self.assertNotIn("VoiceInputSettings.appbin", build)
+        self.assertNotIn("VoiceInputSettings.appbin", spec)
+
+    def test_uv_created_environment_does_not_require_bundled_pip(self):
+        build = (ROOT / "build-internal-dmg.command").read_text(encoding="utf-8")
+
+        self.assertIn("uv pip install --python", build)
+        self.assertIn("-m ensurepip --upgrade", build)
+        self.assertNotIn("-m pip show pyinstaller", build)
+
+    def test_release_verifier_is_isolated_from_installed_app(self):
+        verifier = (
+            ROOT / "tools" / "verify-release-candidate.command"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("VOICE_INPUT_DISABLE_LOGIN_SYNC=true", verifier)
+        self.assertIn("系统注册型录音快捷键已启用", verifier)
+        self.assertIn("Stressing the bundled settings helper startup five times", verifier)
+        self.assertIn("Contents/Helpers/VoxTypeSettings.app", verifier)
+        self.assertIn("Triggering two registered hotkeys in the frozen app", verifier)
+        self.assertIn("post-hotkey-event.py", verifier)
+        self.assertIn('pgrep -f -x "$SETTINGS_EXECUTABLE"', verifier)
+        self.assertIn("Hotkey cycle settings helper did not finish startup", verifier)
+        self.assertIn("mktemp -d", verifier)
+        self.assertNotIn("/Applications/VoxType.app", verifier)
+        self.assertNotIn("SMAppService", verifier)
+
+    def test_dead_permission_process_does_not_trap_the_user(self):
+        settings = (ROOT / "native_settings" / "VoiceInputSettings.swift").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('Button("关闭设置窗口")', settings)
+        self.assertIn('Button("重启并重新检查")', settings)
+        self.assertIn('return "当前主程序已退出"', settings)
+        self.assertIn("请关闭此窗口", settings)
 
 
 if __name__ == "__main__":

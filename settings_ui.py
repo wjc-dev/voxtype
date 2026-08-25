@@ -67,7 +67,7 @@ FN_MODE_OPTIONS = [
 ]
 HOTKEY_BACKEND_OPTIONS = [
     ("系统注册 ⌃⌥Space（无需输入监控）", "registered"),
-    ("只读监听（企业电脑推荐）", "passive"),
+    ("只读键盘监听", "passive"),
     ("关闭全局快捷键（点击菜单栏录音）", "off"),
 ]
 DISFLUENCY_OPTIONS = [

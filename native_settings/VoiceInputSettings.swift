@@ -180,6 +180,8 @@ struct DiagnosticSnapshot: Codable {
     var lastSessionPreviewCount: Int?
     var lastSessionFirstPreviewMs: Int?
     var lastSessionCommitted: Bool?
+    var loginItemStatus: String?
+    var loginItemError: String?
 
     enum CodingKeys: String, CodingKey {
         case version, engine, state, microphone, hotkey
@@ -195,6 +197,8 @@ struct DiagnosticSnapshot: Codable {
         case lastSessionPreviewCount = "last_session_preview_count"
         case lastSessionFirstPreviewMs = "last_session_first_preview_ms"
         case lastSessionCommitted = "last_session_committed"
+        case loginItemStatus = "login_item_status"
+        case loginItemError = "login_item_error"
     }
 }
 
@@ -248,10 +252,10 @@ final class SettingsModel: ObservableObject {
 
     @Published var punctuationMode = "spaces"
     @Published var disfluencyMode = "off"
-    @Published var hotkeySpec = "fn"
-    @Published var hotkeyLabel = "Fn / Globe"
+    @Published var hotkeySpec = "keycode:49;mods:control+option"
+    @Published var hotkeyLabel = "⌃⌥Space"
     @Published var hotkeyMode = "hold"
-    @Published var hotkeyBackend = "passive"
+    @Published var hotkeyBackend = "registered"
     @Published var launchAtLogin = true
 
     @Published var transcriptionService = "qwen"
@@ -296,8 +300,6 @@ final class SettingsModel: ObservableObject {
             attributes: [.posixPermissions: 0o700]
         )
         launchAtLogin = isBundled
-            ? FileManager.default.fileExists(atPath: Self.loginAgentURL.path)
-            : false
         load()
     }
 
@@ -314,19 +316,13 @@ final class SettingsModel: ObservableObject {
         dataURL.appendingPathComponent(".permission-request.json")
     }
     var shortcutCaptureURL: URL { dataURL.appendingPathComponent(".shortcut-capture") }
-
-    static var loginAgentURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/LaunchAgents/com.voxtype.dev.plist")
-    }
-
-    static var legacyLoginAgentURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/LaunchAgents/com.voxtype.dev.legacy.plist")
-    }
+    var supervisorPauseURL: URL { dataURL.appendingPathComponent(".supervisor-paused") }
 
     func load() {
         environment = Self.readEnvironment(envURL)
+        launchAtLogin = isBundled
+            ? Self.bool(environment["LAUNCH_AT_LOGIN"], fallback: true)
+            : false
         transcriptionService = environment["TRANSCRIPTION_SERVICE"] == "doubao"
             ? "doubao" : "qwen"
         punctuationMode = environment["PUNCTUATION_MODE"] ?? "spaces"
@@ -334,10 +330,15 @@ final class SettingsModel: ObservableObject {
             ?? (Self.bool(environment["DISFLUENCY_FILTER_ENABLED"], fallback: false)
                 ? "conservative" : "off")
         hotkeyMode = environment["FN_HOTKEY_MODE"] ?? "hold"
-        hotkeyBackend = environment["GLOBAL_HOTKEY_BACKEND"] ?? "passive"
-        hotkeySpec = environment["VOICE_HOTKEY"]
-            ?? ((environment["SINGLE_FN_HOTKEY"] ?? "false") == "true" ? "fn" : "fn")
-        hotkeyLabel = environment["VOICE_HOTKEY_LABEL"] ?? Self.label(for: hotkeySpec)
+        let storedHotkey = environment["VOICE_HOTKEY"]
+            ?? ((environment["SINGLE_FN_HOTKEY"] ?? "false") == "true"
+                ? "fn" : HotkeyConfig.defaultSpec)
+        hotkeySpec = HotkeyConfig.isSupported(storedHotkey)
+            ? storedHotkey : HotkeyConfig.defaultSpec
+        hotkeyLabel = hotkeySpec == storedHotkey
+            ? (environment["VOICE_HOTKEY_LABEL"] ?? Self.label(for: hotkeySpec))
+            : HotkeyConfig.defaultLabel
+        hotkeyBackend = Self.backend(for: hotkeySpec)
 
         qwenRegion = environment["QWEN_REGION"] ?? "beijing"
         qwenAPIKey = environment["QWEN_API_KEY"] ?? ""
@@ -436,9 +437,7 @@ final class SettingsModel: ObservableObject {
 
     var permissionsMatchCurrentApp: Bool {
         guard permissions.checkedByCurrentProcess == true,
-              let permissionPID = permissions.pid,
-              permissionPID > 1,
-              Darwin.kill(Int32(permissionPID), 0) == 0,
+              permissionProcessAlive,
               let permissionVersion = permissions.version,
               permissionVersion == diagnostics.version
         else { return false }
@@ -457,6 +456,13 @@ final class SettingsModel: ObservableObject {
             }
         }
         return true
+    }
+
+    var permissionProcessAlive: Bool {
+        guard let permissionPID = permissions.pid, permissionPID > 1 else {
+            return false
+        }
+        return Darwin.kill(Int32(permissionPID), 0) == 0
     }
 
     var allRequiredPermissionsGranted: Bool {
@@ -591,6 +597,7 @@ final class SettingsModel: ObservableObject {
             "FN_HOTKEY_MODE": hotkeyMode,
             "GLOBAL_HOTKEY_BACKEND": hotkeyBackend,
             "SINGLE_FN_HOTKEY": "true",
+            "LAUNCH_AT_LOGIN": String(launchAtLogin),
             "QWEN_API_KEY": qwenAPIKey,
             "QWEN_API_HOST": qwenAPIHost,
             "QWEN_WORKSPACE_ID": qwenAPIHost.isEmpty ? qwenWorkspace : "",
@@ -622,9 +629,7 @@ final class SettingsModel: ObservableObject {
             try Self.updateEnvironmentFile(envURL, updates: updates)
             try Self.privateWrite(Data(personalContext.utf8), to: contextURL)
             try Self.privateWrite(Data(customVocabulary.utf8), to: customVocabularyURL)
-            if isBundled {
-                try configureLaunchAtLogin()
-            } else {
+            if !isBundled {
                 try restartBackgroundService()
             }
             environment.merge(updates) { _, new in new }
@@ -640,68 +645,22 @@ final class SettingsModel: ObservableObject {
         }
     }
 
-    private func configureLaunchAtLogin() throws {
-        let agentURL = Self.loginAgentURL
-        let domain = "gui/\(getuid())"
-
-        // 3.5.2 gave the packaged app a stable identity distinct from old
-        // ad-hoc-signed backups. Retire only the obsolete login item; the app,
-        // API key and all user data are intentionally left untouched.
-        let legacyAgentURL = Self.legacyLoginAgentURL
-        let legacy = Process()
-        legacy.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        legacy.arguments = ["bootout", domain, legacyAgentURL.path]
-        try? legacy.run()
-        legacy.waitUntilExit()
-        try? FileManager.default.removeItem(at: legacyAgentURL)
-
-        let existing = Process()
-        existing.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        existing.arguments = ["bootout", domain, agentURL.path]
-        try? existing.run()
-        existing.waitUntilExit()
-
-        if !launchAtLogin {
-            try? FileManager.default.removeItem(at: agentURL)
+    func restartAndRecheckPermissions() {
+        guard permissionProcessAlive else {
+            errorMessage = "当前 VoxType 主程序已经退出，请重新打开 App。"
             return
         }
-        guard !appPath.isEmpty else {
-            throw NSError(
-                domain: "VoiceInputSettings", code: 12,
-                userInfo: [NSLocalizedDescriptionKey: "无法确定 App 路径，请把 App 放入“应用程序”后重试。"]
-            )
+        guard isBundled else {
+            reloadPermissions()
+            return
         }
-        try FileManager.default.createDirectory(
-            at: agentURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        let plist: [String: Any] = [
-            "Label": "com.voxtype.dev",
-            "ProgramArguments": [
-                "/usr/bin/open", appPath, "--args", "--background-login"
-            ],
-            "RunAtLoad": true,
-            "KeepAlive": false,
-            "LimitLoadToSessionType": "Aqua",
-        ]
-        let data = try PropertyListSerialization.data(
-            fromPropertyList: plist, format: .xml, options: 0
-        )
-        try Self.privateWrite(data, to: agentURL)
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        task.arguments = ["bootstrap", domain, agentURL.path]
-        try task.run()
-        task.waitUntilExit()
-        if task.terminationStatus != 0 {
-            throw NSError(
-                domain: "VoiceInputSettings", code: Int(task.terminationStatus),
-                userInfo: [NSLocalizedDescriptionKey: "无法启用开机启动"]
-            )
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            exit(42)
         }
     }
 
     func quitVoiceInput() {
+        try? Data("paused-by-user".utf8).write(to: supervisorPauseURL, options: .atomic)
         if parentPID > 1 { kill(parentPID, SIGTERM) }
         NSApp.terminate(nil)
     }
@@ -739,60 +698,30 @@ final class SettingsModel: ObservableObject {
     static func label(for spec: String) -> String {
         switch spec {
         case "fn": return "地球仪 / Fn（🌐）"
+        case "left_option": return "左 Option（⌥）"
         case "right_option": return "右 Option（⌥）"
+        case "left_command": return "左 Command（⌘）"
         case "right_command": return "右 Command（⌘）"
+        case "left_control": return "左 Control（⌃）"
+        case "right_control": return "右 Control（⌃）"
         default: return "自定义快捷键"
         }
     }
 
     static func backend(for spec: String) -> String {
-        guard spec.hasPrefix("keycode:"),
-              let marker = spec.range(of: ";mods:")
-        else { return "passive" }
-        let modifiers = spec[marker.upperBound...]
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return modifiers.isEmpty ? "passive" : "registered"
+        HotkeyConfig.backend(for: spec)
     }
 
     static func readEnvironment(_ url: URL) -> [String: String] {
-        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [:] }
-        var result: [String: String] = [:]
-        for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = String(rawLine)
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard !trimmed.hasPrefix("#"), let equal = line.firstIndex(of: "=") else { continue }
-            let key = line[..<equal].trimmingCharacters(in: .whitespaces)
-            result[key] = String(line[line.index(after: equal)...])
-        }
-        return result
+        SettingsEnvironment.read(url)
     }
 
     static func updateEnvironmentFile(_ url: URL, updates: [String: String]) throws {
-        let existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-        var pending = updates
-        var lines: [String] = []
-        for line in existing.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if !trimmed.hasPrefix("#"), let equal = line.firstIndex(of: "=") {
-                let key = line[..<equal].trimmingCharacters(in: .whitespaces)
-                if let value = pending.removeValue(forKey: key) {
-                    lines.append("\(key)=\(value)")
-                    continue
-                }
-            }
-            lines.append(line)
-        }
-        if lines.last != "" { lines.append("") }
-        for key in pending.keys.sorted() { lines.append("\(key)=\(pending[key]!)") }
-        try privateWrite(Data((lines.joined(separator: "\n") + "\n").utf8), to: url)
+        try SettingsEnvironment.update(url, updates: updates)
     }
 
     static func privateWrite(_ data: Data, to url: URL) throws {
-        try FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(), withIntermediateDirectories: true
-        )
-        try data.write(to: url, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        try SettingsEnvironment.privateWrite(data, to: url)
     }
 }
 
@@ -835,12 +764,15 @@ struct HotkeyRecorder: View {
             .buttonStyle(.bordered)
 
             Menu("常用选项") {
-                Button("⌃⌥Space（企业兼容）") {
+                Button("⌃⌥Space") {
                     choose("keycode:49;mods:control+option", "⌃⌥Space")
                 }
                 Button("地球仪 / Fn（🌐）") { choose("fn", "地球仪 / Fn（🌐）") }
+                Button("左 Option（⌥）") { choose("left_option", "左 Option（⌥）") }
                 Button("右 Option（⌥）") { choose("right_option", "右 Option（⌥）") }
+                Button("左 Command（⌘）") { choose("left_command", "左 Command（⌘）") }
                 Button("右 Command（⌘）") { choose("right_command", "右 Command（⌘）") }
+                Button("右 Control（⌃）") { choose("right_control", "右 Control（⌃）") }
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
@@ -933,6 +865,19 @@ struct HotkeyCaptureView: NSViewRepresentable {
     final class Coordinator {
         var parent: HotkeyCaptureView
         private var localMonitor: Any?
+        private var modifierCapture = ModifierCaptureAccumulator()
+
+        private static let modifierOnlyChoices: [
+            UInt16: (flag: NSEvent.ModifierFlags, spec: String, label: String)
+        ] = [
+            63: (.function, "fn", "地球仪 / Fn（🌐）"),
+            58: (.option, "left_option", "左 Option（⌥）"),
+            61: (.option, "right_option", "右 Option（⌥）"),
+            55: (.command, "left_command", "左 Command（⌘）"),
+            54: (.command, "right_command", "右 Command（⌘）"),
+            59: (.control, "left_control", "左 Control（⌃）"),
+            62: (.control, "right_control", "右 Control（⌃）"),
+        ]
 
         init(_ parent: HotkeyCaptureView) { self.parent = parent }
 
@@ -951,25 +896,30 @@ struct HotkeyCaptureView: NSViewRepresentable {
             } else if !active, let localMonitor {
                 NSEvent.removeMonitor(localMonitor)
                 self.localMonitor = nil
+                modifierCapture.reset()
             }
         }
 
         func capture(_ event: NSEvent) -> Bool {
             if event.type == .flagsChanged {
                 let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-                if event.keyCode == 63, flags.contains(.function) {
-                    complete(spec: "fn", label: "地球仪 / Fn（🌐）")
-                    return true
+                guard let choice = Self.modifierOnlyChoices[event.keyCode] else {
+                    return false
                 }
-                if event.keyCode == 61, flags.contains(.option) {
-                    complete(spec: "right_option", label: "右 Option（⌥）")
-                    return true
+                switch modifierCapture.modifierChanged(
+                    keyCode: Int(event.keyCode),
+                    aggregateFlagIsSet: flags.contains(choice.flag)
+                ) {
+                case .waiting:
+                    break
+                case .singleModifier(let keyCode):
+                    if let single = Self.modifierOnlyChoices[UInt16(keyCode)] {
+                        complete(spec: single.spec, label: single.label)
+                    }
+                case .incompleteChord:
+                    NSSound.beep()
                 }
-                if event.keyCode == 54, flags.contains(.command) {
-                    complete(spec: "right_command", label: "右 Command（⌘）")
-                    return true
-                }
-                return false
+                return true
             }
 
             if event.keyCode == 53 { // Escape cancels recording.
@@ -979,19 +929,24 @@ struct HotkeyCaptureView: NSViewRepresentable {
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             let modifierNames = Self.modifierNames(flags)
             let keyName = Self.keyName(event)
-            let isFunctionKey = Self.functionKeyCodes[event.keyCode] != nil
-            guard !keyName.isEmpty, !modifierNames.isEmpty || isFunctionKey else {
+            guard !keyName.isEmpty, !modifierNames.isEmpty else {
                 NSSound.beep()
                 return true
             }
-            let encoded = modifierNames.map(\.name).joined(separator: "+")
-            let newSpec = "keycode:\(event.keyCode);mods:\(encoded)"
+            guard let newSpec = HotkeyConfig.registeredSpec(
+                keyCode: Int(event.keyCode),
+                modifiers: modifierNames.map(\.name)
+            ) else {
+                NSSound.beep()
+                return true
+            }
             let newLabel = modifierNames.map(\.symbol).joined() + keyName
             complete(spec: newSpec, label: newLabel)
             return true
         }
 
         func complete(spec: String, label: String) {
+            modifierCapture.reset()
             DispatchQueue.main.async {
                 self.parent.spec = spec
                 self.parent.label = label
@@ -1144,14 +1099,27 @@ struct PermissionSetupView: View {
             identityCard
 
             HStack {
-                Button("退出 VoxType", role: .destructive) {
-                    model.quitVoiceInput()
+                Menu("更多") {
+                    Button("关闭设置窗口") { NSApp.terminate(nil) }
+                    if model.permissionProcessAlive {
+                        Divider()
+                        Button("退出 VoxType", role: .destructive) {
+                            model.quitVoiceInput()
+                        }
+                    }
                 }
+                .menuStyle(.borderlessButton)
                 Spacer()
                 Button("检查并授权") {
                     model.requestPermission("all", openSettings: false)
                 }
                 .buttonStyle(.bordered)
+                .disabled(!model.permissionProcessAlive)
+                Button("重启并重新检查") {
+                    model.restartAndRecheckPermissions()
+                }
+                .buttonStyle(.bordered)
+                .disabled(!model.permissionProcessAlive)
                 Button("继续") { onContinue() }
                     .buttonStyle(.borderedProminent)
                     .disabled(!model.allRequiredPermissionsGranted)
@@ -1175,12 +1143,11 @@ struct PermissionSetupView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Label(
-                    model.permissionsMatchCurrentApp ? "已确认当前运行版本" : "正在核对当前运行版本",
-                    systemImage: model.permissionsMatchCurrentApp
-                        ? "checkmark.shield.fill" : "arrow.triangle.2.circlepath"
+                    identityStatusText,
+                    systemImage: identityStatusIcon
                 )
                 .font(.headline)
-                .foregroundStyle(model.permissionsMatchCurrentApp ? Color.green : Color.orange)
+                .foregroundStyle(identityStatusColor)
                 Spacer()
                 Text("PID \(model.permissions.pid.map(String.init) ?? "—")")
                     .font(.caption.monospacedDigit())
@@ -1199,9 +1166,31 @@ struct PermissionSetupView: View {
             Text("以上状态由该 PID 的主程序直接读取。旧版本即使同名且已授权，也不会让当前版本显示为已授权。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            if !model.permissionProcessAlive {
+                Text("当前主程序已经退出。请关闭此窗口，再从“应用程序”或 Spotlight 重新打开 VoxType。")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.red)
+            }
         }
         .padding(16)
         .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private var identityStatusText: String {
+        if !model.permissionProcessAlive { return "当前主程序已退出" }
+        return model.permissionsMatchCurrentApp
+            ? "已确认当前运行版本" : "正在核对当前运行版本"
+    }
+
+    private var identityStatusIcon: String {
+        if !model.permissionProcessAlive { return "xmark.octagon.fill" }
+        return model.permissionsMatchCurrentApp
+            ? "checkmark.shield.fill" : "arrow.triangle.2.circlepath"
+    }
+
+    private var identityStatusColor: Color {
+        if !model.permissionProcessAlive { return .red }
+        return model.permissionsMatchCurrentApp ? .green : .orange
     }
 }
 
@@ -1513,6 +1502,14 @@ struct RecoverySettingsView: View {
                     LabeledContent("键盘模式") {
                         Text(backendLabel(model.diagnostics.hotkeyBackend ?? model.hotkeyBackend))
                     }
+                    LabeledContent("后台启动") {
+                        Text(loginItemLabel(model.diagnostics.loginItemStatus))
+                    }
+                    if let error = model.diagnostics.loginItemError, !error.isEmpty {
+                        LabeledContent("后台启动错误") {
+                            Text(error).foregroundStyle(.red).lineLimit(2)
+                        }
+                    }
                     if let error = model.diagnostics.lastError, !error.isEmpty {
                         LabeledContent("最近错误") { Text(error).foregroundStyle(.red) }
                     }
@@ -1612,9 +1609,22 @@ struct RecoverySettingsView: View {
     private func backendLabel(_ backend: String) -> String {
         switch backend {
         case "registered": return "系统注册组合键"
-        case "passive": return "只读监听（企业兼容）"
+        case "passive": return "只读键盘监听"
         case "off": return "已关闭；使用菜单栏"
         default: return backend
+        }
+    }
+
+    private func loginItemLabel(_ status: String?) -> String {
+        switch status {
+        case "enabled": return "已启用并受系统管理"
+        case "enabled_legacy_running": return "已启用；旧版仍在运行"
+        case "requires_approval": return "需要在系统设置中允许"
+        case "not_registered", "not_found": return "未启用"
+        case "source_run": return "源码调试模式"
+        case "disabled_for_test": return "隔离测试模式"
+        case "error": return "配置失败"
+        default: return status ?? "等待刷新"
         }
     }
 }

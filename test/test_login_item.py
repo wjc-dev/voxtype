@@ -1,0 +1,97 @@
+import unittest
+import tempfile
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+from src import login_item
+
+
+class LoginItemTests(unittest.TestCase):
+    def test_manual_launch_clears_explicit_supervisor_pause(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / ".supervisor-paused"
+            marker.write_text("paused-by-user", encoding="utf-8")
+            with patch.object(login_item, "SUPERVISOR_PAUSE_FILE", marker):
+                login_item.resume_supervisor_for_manual_launch(["--background-login"])
+            self.assertFalse(marker.exists())
+
+    def test_supervised_launch_preserves_explicit_pause(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / ".supervisor-paused"
+            marker.write_text("paused-by-user", encoding="utf-8")
+            with patch.object(login_item, "SUPERVISOR_PAUSE_FILE", marker):
+                login_item.resume_supervisor_for_manual_launch(["--supervised"])
+            self.assertTrue(marker.exists())
+
+    def test_isolated_runtime_can_disable_external_registration(self):
+        with (
+            patch.dict("os.environ", {"VOICE_INPUT_DISABLE_LOGIN_SYNC": "true"}),
+            patch.object(login_item, "IS_FROZEN", True),
+        ):
+            result = login_item.sync_login_item(True)
+
+        self.assertEqual(result.status, "disabled_for_test")
+
+    def test_source_run_never_registers_external_service(self):
+        with patch.object(login_item, "IS_FROZEN", False):
+            result = login_item.sync_login_item(True)
+
+        self.assertEqual(result.status, "source_run")
+        self.assertFalse(result.changed)
+
+    def test_legacy_agents_retire_only_after_modern_service_is_enabled(self):
+        service = MagicMock()
+        service.status.side_effect = [0, 1]
+        service.registerAndReturnError_.return_value = (True, None)
+        framework = MagicMock()
+        framework.SMAppService.agentServiceWithPlistName_.return_value = service
+
+        with (
+            patch.object(login_item, "IS_FROZEN", True),
+            patch.dict("sys.modules", {"ServiceManagement": framework}),
+            patch.object(login_item, "_retire_legacy_agents") as retire,
+            patch.object(login_item, "_legacy_app_is_running", return_value=False),
+        ):
+            result = login_item.sync_login_item(True)
+
+        self.assertEqual(result.status, "enabled")
+        self.assertTrue(result.changed)
+        retire.assert_called_once_with()
+
+    def test_running_legacy_app_is_reported_instead_of_silent_duplicate(self):
+        service = MagicMock()
+        service.status.return_value = 1
+        framework = MagicMock()
+        framework.SMAppService.agentServiceWithPlistName_.return_value = service
+
+        with (
+            patch.object(login_item, "IS_FROZEN", True),
+            patch.dict("sys.modules", {"ServiceManagement": framework}),
+            patch.object(login_item, "_retire_legacy_agents"),
+            patch.object(login_item, "_legacy_app_is_running", return_value=True),
+        ):
+            result = login_item.sync_login_item(True)
+
+        self.assertEqual(result.status, "enabled_legacy_running")
+        self.assertIn("旧版 Voice Input", result.error)
+
+    def test_registration_error_preserves_legacy_agents(self):
+        service = MagicMock()
+        service.status.return_value = 0
+        service.registerAndReturnError_.return_value = (False, "not signed")
+        framework = MagicMock()
+        framework.SMAppService.agentServiceWithPlistName_.return_value = service
+
+        with (
+            patch.object(login_item, "IS_FROZEN", True),
+            patch.dict("sys.modules", {"ServiceManagement": framework}),
+            patch.object(login_item, "_retire_legacy_agents") as retire,
+        ):
+            result = login_item.sync_login_item(True)
+
+        self.assertEqual(result.error, "not signed")
+        retire.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()

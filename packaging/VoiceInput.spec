@@ -7,7 +7,7 @@ project = Path(SPEC).resolve().parents[1]
 a = Analysis(
     [str(project / "main.py")],
     pathex=[str(project)],
-    binaries=[(str(project / "build" / "VoiceInputSettings.appbin"), "native_settings")],
+    binaries=[],
     datas=[
         (str(project / "env.example"), "."),
         (str(project / "packaging" / "StatusBarIcon.png"), "."),
@@ -17,9 +17,9 @@ a = Analysis(
         "AVFoundation",
         "CoreText",
         "Quartz",
+        "ServiceManagement",
         "PyObjCTools",
         "truststore",
-        "certifi",
         "_sounddevice_data",
     ],
     excludes=[
@@ -62,12 +62,12 @@ app = BUNDLE(
     name="VoxType.app",
     icon=str(project / "packaging" / "AppIcon.icns"),
     bundle_identifier="com.voxtype.dev",
-    version="0.1.1",
+    version="0.2.0",
     info_plist={
         "CFBundleDisplayName": "VoxType",
         "CFBundleName": "VoxType",
-        "CFBundleShortVersionString": "0.1.1",
-        "CFBundleVersion": "101",
+        "CFBundleShortVersionString": "0.2.0",
+        "CFBundleVersion": "200",
         "LSMinimumSystemVersion": "13.0",
         "LSUIElement": True,
         "NSHighResolutionCapable": True,

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PROJECT_DIR="${0:A:h}"
-VERSION="0.1.1"
+VERSION="0.2.0"
 OUTPUT_DIR="${1:-$PROJECT_DIR/dist-internal}"
 RUN_ID="$(date +%Y%m%d-%H%M%S)-$$"
 WORK_DIR="$PROJECT_DIR/.package-build/$RUN_ID"
@@ -30,15 +30,21 @@ mkdir -p "$WORK_DIR" "$PYINSTALLER_WORK" "$PYINSTALLER_DIST" "$ICONSET" "$STAGIN
 export CLANG_MODULE_CACHE_PATH="$CLANG_CACHE"
 export SWIFT_MODULECACHE_PATH="$CLANG_CACHE"
 
-"$PROJECT_DIR/.venv/bin/python" -m pip show pyinstaller >/dev/null 2>&1 || \
-  "$PROJECT_DIR/.venv/bin/python" -m pip install 'pyinstaller>=6.10,<7'
+if ! "$PROJECT_DIR/.venv/bin/python" -c 'import PyInstaller' >/dev/null 2>&1; then
+  if command -v uv >/dev/null 2>&1; then
+    uv pip install --python "$PROJECT_DIR/.venv/bin/python" 'pyinstaller>=6.10,<7'
+  else
+    "$PROJECT_DIR/.venv/bin/python" -m ensurepip --upgrade
+    "$PROJECT_DIR/.venv/bin/python" -m pip install 'pyinstaller>=6.10,<7'
+  fi
+fi
 
-xcrun swiftc -parse-as-library -O -target arm64-apple-macos13.0 \
-  -framework SwiftUI -framework AppKit \
-  -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist \
-  -Xlinker "$PROJECT_DIR/native_settings/VoiceInputSettings-Info.plist" \
-  "$PROJECT_DIR/native_settings/VoiceInputSettings.swift" \
-  -o "$PROJECT_DIR/build/VoiceInputSettings.appbin"
+zsh "$PROJECT_DIR/build-native-settings.command"
+
+xcrun swiftc -O -target arm64-apple-macos13.0 \
+  -framework AppKit \
+  "$PROJECT_DIR/native_settings/VoxTypeSupervisor.swift" \
+  -o "$PROJECT_DIR/build/VoxTypeSupervisor"
 
 if [[ ! -f "$PROJECT_DIR/packaging/AppIcon.icns" || \
       "$PROJECT_DIR/packaging/generate_app_icon.swift" -nt "$PROJECT_DIR/packaging/AppIcon.icns" ]]; then
@@ -59,11 +65,24 @@ fi
   --workpath "$PYINSTALLER_WORK" \
   "$PROJECT_DIR/packaging/VoiceInput.spec"
 
+mkdir -p "$APP_PATH/Contents/Helpers" \
+  "$APP_PATH/Contents/Library/LaunchAgents" \
+  "$APP_PATH/Contents/Resources"
+ditto "$PROJECT_DIR/build/VoxTypeSettings.app" \
+  "$APP_PATH/Contents/Helpers/VoxTypeSettings.app"
+cp "$PROJECT_DIR/packaging/com.voxtype.dev.agent.plist" \
+  "$APP_PATH/Contents/Library/LaunchAgents/com.voxtype.dev.agent.plist"
+cp "$PROJECT_DIR/build/VoxTypeSupervisor" \
+  "$APP_PATH/Contents/Resources/VoxTypeSupervisor"
+
 while IFS= read -r -d '' FILE; do
   if [[ -x "$FILE" || "$FILE" == *.dylib || "$FILE" == *.so ]]; then
     /usr/bin/codesign --force --sign - --timestamp=none "$FILE"
   fi
 done < <(find "$APP_PATH/Contents" -type f -print0)
+
+/usr/bin/codesign --force --sign - --timestamp=none \
+  "$APP_PATH/Contents/Helpers/VoxTypeSettings.app"
 
 /usr/bin/codesign --force --sign - --timestamp=none \
   --entitlements "$PROJECT_DIR/packaging/voice_input.entitlements" \

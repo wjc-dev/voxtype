@@ -41,7 +41,9 @@ class _PassiveTapListener:
         self._intercept = intercept
         self._callback = self._deliver
         self.tap_ref = None
+        self.run_loop = None
         self.running = False
+        self.recovery_count = 0
 
     def __enter__(self):
         self.running = True
@@ -57,16 +59,35 @@ class _PassiveTapListener:
         self._intercept(event_type, event)
         return event
 
+    def _repair_if_disabled(self) -> bool:
+        """Re-enable a listen-only tap that macOS disabled after a timeout.
+
+        A disabled event tap is otherwise indistinguishable from an idle app:
+        the process and menu-bar item stay alive, but the push-to-talk shortcut
+        never fires again.  Polling the tap state gives that failure mode a
+        deterministic recovery path.
+        """
+        from Quartz import CGEventTapEnable, CGEventTapIsEnabled
+
+        tap = self.tap_ref
+        if tap is None or CGEventTapIsEnabled(tap):
+            return False
+        CGEventTapEnable(tap, True)
+        self.recovery_count += 1
+        logger.warning("键盘事件监听被系统暂停，已自动恢复（第 %s 次）", self.recovery_count)
+        return True
+
     def join(self) -> None:
         from Quartz import (
             CFMachPortCreateRunLoopSource,
             CFRunLoopAddSource,
             CFRunLoopGetCurrent,
-            CFRunLoopRun,
+            CFRunLoopRunInMode,
             CGEventMaskBit,
             CGEventTapCreate,
             CGEventTapEnable,
             kCFRunLoopCommonModes,
+            kCFRunLoopDefaultMode,
             kCGEventFlagsChanged,
             kCGEventKeyDown,
             kCGEventKeyUp,
@@ -93,9 +114,12 @@ class _PassiveTapListener:
             raise RuntimeError("macOS 未允许只读快捷键监听")
         self.tap_ref = tap
         source = CFMachPortCreateRunLoopSource(None, tap, 0)
-        CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopCommonModes)
+        self.run_loop = CFRunLoopGetCurrent()
+        CFRunLoopAddSource(self.run_loop, source, kCFRunLoopCommonModes)
         CGEventTapEnable(tap, True)
-        CFRunLoopRun()
+        while self.running:
+            CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1.0, False)
+            self._repair_if_disabled()
 
 
 class _PassiveGlobalMonitorListener:
@@ -158,6 +182,8 @@ class _RegisteredHotKeyListener:
         "shift": 1 << 9,
         "option": 1 << 11,
         "control": 1 << 12,
+        # Carbon uses the same secondary-Fn bit as CGEventFlags.
+        "function": 1 << 23,
     }
 
     def __init__(self, spec, on_pressed) -> None:
@@ -265,6 +291,16 @@ def _process_name(pid: int) -> str:
 class KeyboardManager:
     """Own one global shortcut and commit final text exactly once."""
 
+    DEFAULT_VOICE_HOTKEY = "keycode:49;mods:control+option"
+    DEFAULT_VOICE_HOTKEY_LABEL = "⌃⌥Space"
+    VALID_REGISTERED_MODIFIERS = {
+        "command",
+        "shift",
+        "option",
+        "control",
+        "function",
+    }
+
     def __init__(
         self,
         on_record_start: Callable[[], None],
@@ -285,7 +321,10 @@ class KeyboardManager:
         self._last_voice_insertion = None
         self._recovery_texts = deque(maxlen=5)
 
-        self.voice_hotkey = os.getenv("VOICE_HOTKEY", "fn").strip().lower() or "fn"
+        self.voice_hotkey = (
+            os.getenv("VOICE_HOTKEY", self.DEFAULT_VOICE_HOTKEY).strip().lower()
+            or self.DEFAULT_VOICE_HOTKEY
+        )
         self.voice_hotkey_label = os.getenv("VOICE_HOTKEY_LABEL", "").strip()
         self._hotkey_mode = os.getenv("FN_HOTKEY_MODE", "hold").strip().lower()
         if self._hotkey_mode not in {"hold", "toggle"}:
@@ -293,20 +332,25 @@ class KeyboardManager:
         self._voice_hotkey_pressed = False
         self._voice_hotkey_spec = self._parse_voice_hotkey(self.voice_hotkey)
         if self._voice_hotkey_spec is None:
-            logger.warning("快捷键配置无效，已恢复为 Fn / Globe")
-            self.voice_hotkey = "fn"
-            self._voice_hotkey_spec = self._parse_voice_hotkey("fn")
+            logger.warning("快捷键配置无效，已恢复为 ⌃⌥Space")
+            self.voice_hotkey = self.DEFAULT_VOICE_HOTKEY
+            self.voice_hotkey_label = self.DEFAULT_VOICE_HOTKEY_LABEL
+            self._voice_hotkey_spec = self._parse_voice_hotkey(
+                self.DEFAULT_VOICE_HOTKEY
+            )
 
         self._shortcut_capture_lock_file = DATA_DIR / ".shortcut-capture"
         self._shortcut_capture_checked_at = 0.0
         self._shortcut_capture_is_active = False
         self._listener = None
         self._tap_disabled_log_time = 0.0
-        self._hotkey_backend = os.getenv(
+        requested_backend = os.getenv(
             "GLOBAL_HOTKEY_BACKEND", "passive"
         ).strip().lower()
-        if self._hotkey_backend not in {"registered", "passive", "off"}:
-            self._hotkey_backend = "passive"
+        self._hotkey_backend = self._backend_for_hotkey(
+            self._voice_hotkey_spec,
+            requested_backend,
+        )
         self._suppress_vks, self._suppress_modifier_mask = self._build_hotkey_suppression()
 
         # Audio start/stop can block briefly. Serializing them off the event-tap
@@ -673,8 +717,12 @@ class KeyboardManager:
     def _parse_voice_hotkey(self, value: str):
         special = {
             "fn": {"kind": "modifier", "vk": 63, "modifier": "function"},
+            "left_option": {"kind": "modifier", "vk": 58, "modifier": "option"},
             "right_option": {"kind": "modifier", "vk": 61, "modifier": "option"},
+            "left_command": {"kind": "modifier", "vk": 55, "modifier": "command"},
             "right_command": {"kind": "modifier", "vk": 54, "modifier": "command"},
+            "left_control": {"kind": "modifier", "vk": 59, "modifier": "control"},
+            "right_control": {"kind": "modifier", "vk": 62, "modifier": "control"},
         }
         if value in special:
             spec = dict(special[value])
@@ -683,10 +731,28 @@ class KeyboardManager:
         if not value.startswith("keycode:"):
             return None
         try:
-            parts = dict(part.split(":", 1) for part in value.split(";") if ":" in part)
+            parts = {}
+            for part in value.split(";"):
+                if ":" not in part:
+                    return None
+                key, raw_value = part.split(":", 1)
+                if key in parts:
+                    return None
+                parts[key] = raw_value
+            if set(parts) != {"keycode", "mods"}:
+                return None
             vk = int(parts["keycode"])
             modifiers = [name for name in parts.get("mods", "").split("+") if name]
         except (KeyError, TypeError, ValueError):
+            return None
+        if not 0 <= vk <= 127:
+            return None
+        if not modifiers or len(set(modifiers)) != len(modifiers):
+            return None
+        if any(name not in self.VALID_REGISTERED_MODIFIERS for name in modifiers):
+            return None
+        normalized = f"keycode:{vk};mods:{'+'.join(modifiers)}"
+        if normalized != value:
             return None
         return {
             "kind": "key",
@@ -695,11 +761,24 @@ class KeyboardManager:
             "mask": self._modifier_mask(modifiers),
         }
 
+    @staticmethod
+    def _backend_for_hotkey(spec, requested: str) -> str:
+        """Resolve stale or hand-edited backend values to a usable listener."""
+        if requested == "off":
+            return "off"
+        if spec and spec.get("kind") == "key":
+            return "registered"
+        return "passive"
+
     def _voice_hotkey_display_label(self) -> str:
         return {
             "fn": "Fn / Globe",
+            "left_option": "左 Option",
             "right_option": "右 Option",
+            "left_command": "左 Command",
             "right_command": "右 Command",
+            "left_control": "左 Control",
+            "right_control": "右 Control",
         }.get(self.voice_hotkey, self.voice_hotkey_label or "自定义快捷键")
 
     def _build_hotkey_suppression(self):
@@ -829,7 +908,7 @@ class KeyboardManager:
         if self._hotkey_backend == "registered":
             listener = _RegisteredHotKeyListener(
                 self._voice_hotkey_spec,
-                self._set_voice_hotkey_pressed,
+                self._set_registered_hotkey_pressed,
             )
             try:
                 listener.start()
@@ -840,14 +919,29 @@ class KeyboardManager:
                 self.show_warning("组合键注册失败；请在设置中选择其他快捷键")
             return
 
-        listener = _PassiveGlobalMonitorListener(self._nsevent_intercept)
+        # Prefer a listen-only Quartz tap: it reports when macOS disables it
+        # and can be health-checked.  Some managed Macs block event taps even
+        # in listen-only mode, so retain AppKit's global monitor as a fallback.
+        listener = _PassiveTapListener(self._darwin_intercept)
         self._listener = listener
+        try:
+            with listener:
+                logger.info("全局录音快捷键已启用（Quartz 只读监听，可自动恢复）")
+                listener.join()
+            if listener.running:
+                return
+            raise RuntimeError("Quartz 只读监听意外结束")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Quartz 快捷键监听不可用，切换到 AppKit 兼容模式: %s", exc)
+
+        fallback = _PassiveGlobalMonitorListener(self._nsevent_intercept)
+        self._listener = fallback
 
         def install_monitor() -> None:
             try:
-                listener.start()
+                fallback.start()
                 logger.info(
-                    "全局录音快捷键已启用（AppKit 只读监视器，vk=%s）；录音时按 Esc 可取消",
+                    "全局录音快捷键已启用（AppKit 兼容模式，vk=%s）；录音时按 Esc 可取消",
                     sorted(self._suppress_vks),
                 )
             except Exception as exc:  # noqa: BLE001
@@ -859,6 +953,14 @@ class KeyboardManager:
         from PyObjCTools import AppHelper
 
         AppHelper.callAfter(install_monitor)
+
+    def _set_registered_hotkey_pressed(self, pressed: bool) -> None:
+        """Ignore Carbon callbacks while the settings recorder owns the keys."""
+        if self._shortcut_capture_active(force=True):
+            if not pressed:
+                self._voice_hotkey_pressed = False
+            return
+        self._set_voice_hotkey_pressed(pressed)
 
 
 def check_accessibility_permissions() -> None:
