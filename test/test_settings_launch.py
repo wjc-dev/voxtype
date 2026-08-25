@@ -67,6 +67,7 @@ class SettingsLaunchTests(unittest.TestCase):
         fallback = (root / "settings_ui.py").read_text(encoding="utf-8")
         self.assertNotIn("企业兼容", swift)
         self.assertNotIn("企业电脑推荐", fallback)
+        self.assertNotIn("Karabiner 用户", swift)
         self.assertIn("重启并重新检查", swift)
 
     def test_status_controller_has_no_recording_callback(self):

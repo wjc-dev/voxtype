@@ -1277,7 +1277,7 @@ struct GeneralSettingsView: View {
                     Text("按住说话，松开结束").tag("hold")
                     Text("按一下开始，再按一下结束").tag("toggle")
                 }
-                Text("修改后点击右上角“保存并重启”才会生效。Karabiner 用户应按映射后的系统按键配置。")
+                Text("修改后点击右上角“保存并重启”才会生效。")
                     .foregroundStyle(.secondary)
                     .font(.callout)
             }
