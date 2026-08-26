@@ -18,7 +18,13 @@ macOS 上的语音速记工具。按住快捷键说话,松开,文字落到光标
 
 ## 安装
 
-下载最新版 Veyqa Voice 安装包，把 Veyqa Voice 拖到应用程序。首次启动按系统提示授权麦克风和辅助功能。
+使用 Homebrew：
+
+```bash
+brew install --cask wjc-dev/veyqa/veyqa-voice
+```
+
+也可以下载最新版 Veyqa Voice 安装包，把 Veyqa Voice 拖到应用程序。首次启动按系统提示授权麦克风和辅助功能。
 
 需要 macOS 13+ 和 Apple Silicon。
 

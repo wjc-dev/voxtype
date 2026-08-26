@@ -18,7 +18,13 @@ It does not replace your system input method. Pinyin, Wubi, or Rime keep working
 
 ## Install
 
-Grab the latest Veyqa Voice installer, drag Veyqa Voice to Applications. On first launch grant Microphone and Accessibility permissions as prompted.
+With Homebrew:
+
+```bash
+brew install --cask wjc-dev/veyqa/veyqa-voice
+```
+
+Alternatively, grab the latest Veyqa Voice installer and drag Veyqa Voice to Applications. On first launch grant Microphone and Accessibility permissions as prompted.
 
 Requires macOS 13+ on Apple Silicon.
 
