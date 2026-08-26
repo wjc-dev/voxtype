@@ -2,13 +2,13 @@ import AppKit
 import Darwin
 import Foundation
 
-private let bundleIdentifier = "com.voxtype.dev"
+private let bundleIdentifier = "com.wjcdev.veyqa"
 private let checkInterval: UInt32 = 5
 private let crashWindow: TimeInterval = 60
 private let crashLimit = 3
 private let crashCooldown: UInt32 = 300
 private let pauseURL = FileManager.default.homeDirectoryForCurrentUser
-    .appendingPathComponent("Library/Application Support/Voice Input Next/.supervisor-paused")
+    .appendingPathComponent("Library/Application Support/Veyqa/.supervisor-paused")
 
 private func log(_ message: String) {
     let stamp = ISO8601DateFormatter().string(from: Date())
@@ -18,7 +18,7 @@ private func log(_ message: String) {
 
 private func enclosingAppURL() -> URL? {
     // SMAppService may launch BundleProgram with a relative argv[0], for
-    // example "Contents/Resources/VoxTypeSupervisor". _NSGetExecutablePath
+    // example "Contents/Resources/VeyqaSupervisor". _NSGetExecutablePath
     // resolves the actual image path regardless of launchd's working directory.
     var bufferSize: UInt32 = 0
     _ = _NSGetExecutablePath(nil, &bufferSize)
@@ -57,9 +57,9 @@ private func enclosingAppURL() -> URL? {
         return liveURL
     }
     let standardCandidates = [
-        URL(fileURLWithPath: "/Applications/VoxType.app"),
+        URL(fileURLWithPath: "/Applications/Veyqa.app"),
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Applications/VoxType.app"),
+            .appendingPathComponent("Applications/Veyqa.app"),
     ]
     if let installedURL = standardCandidates.compactMap(verifiedHost).first {
         return installedURL
@@ -95,7 +95,7 @@ private func launch(_ appURL: URL) -> Bool {
 }
 
 guard let appURL = enclosingAppURL() else {
-    log("cannot locate containing VoxType.app")
+    log("cannot locate containing Veyqa.app")
     exit(78)
 }
 
@@ -122,7 +122,7 @@ while true {
 
     launches.append(now)
     if launch(appURL) {
-        log("VoxType launch requested")
+        log("Veyqa launch requested")
         // LaunchServices may need a few seconds to finish starting a frozen
         // Python bundle. Do not count that normal startup time as another crash.
         sleep(10)

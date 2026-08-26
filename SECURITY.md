@@ -2,7 +2,7 @@
 
 ## 数据流
 
-VoxType 是本地 macOS 客户端，不是离线识别模型。一次正常语音输入的数据路径是：
+Veyqa 是本地 macOS 客户端，不是离线识别模型。一次正常语音输入的数据路径是：
 
 1. macOS 默认麦克风采集 16 kHz 音频；
 2. 音频在内存中发送给用户选择的千问或豆包 ASR；
@@ -13,7 +13,7 @@ VoxType 是本地 macOS 客户端，不是离线识别模型。一次正常语�
 ## 本地保存
 
 - 默认不保存录音：`AUDIO_ARCHIVE_ENABLED=false`。
-- API 凭证与设置位于当前用户的 `~/Library/Application Support/VoxType`；源码模式位于项目的 `.env`。
+- API 凭证与设置位于当前用户的 `~/Library/Application Support/Veyqa`；首次运行会从旧版 VoxType 迁移设置；源码模式位于项目的 `.env`。
 - 本机纠错可能保存“识别错误 → 人工改为”及次数，因此可能含有私人词汇。
 - 写入失败时的恢复记录可能包含最近的转写文字。
 - 这些文件只应由当前用户读取，不应上传到 Git、Issue、聊天或安装包。

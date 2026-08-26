@@ -4,8 +4,8 @@ set -euo pipefail
 PROJECT_DIR="${0:A:h}"
 cd "$PROJECT_DIR"
 
-if [[ -x build/VoxTypeSettings.app/Contents/MacOS/VoxTypeSettings ]]; then
-  SETTINGS_BINARY="$PROJECT_DIR/build/VoxTypeSettings.app/Contents/MacOS/VoxTypeSettings"
+if [[ -x build/VeyqaSettings.app/Contents/MacOS/VeyqaSettings ]]; then
+  SETTINGS_BINARY="$PROJECT_DIR/build/VeyqaSettings.app/Contents/MacOS/VeyqaSettings"
   EXISTING_PID="$(pgrep -f -x "$SETTINGS_BINARY" | head -n 1 || true)"
   if [[ -n "$EXISTING_PID" ]]; then
     kill -USR1 "$EXISTING_PID"

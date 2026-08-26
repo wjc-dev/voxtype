@@ -16,7 +16,7 @@ class PackagingIdentityTests(unittest.TestCase):
         self.assertIn('version="0.2.0"', spec)
         self.assertIn('"CFBundleShortVersionString": "0.2.0"', spec)
         self.assertIn('VERSION="0.2.0"', build)
-        self.assertIn('PACKAGE_NAME="VoxType-v0.2.0"', source_package)
+        self.assertIn('PACKAGE_NAME="Veyqa-v0.2.0"', source_package)
 
     def test_current_app_and_login_item_use_stable_qwen_identity(self):
         spec = (ROOT / "packaging" / "VoiceInput.spec").read_text(encoding="utf-8")
@@ -25,16 +25,16 @@ class PackagingIdentityTests(unittest.TestCase):
         )
         build = (ROOT / "build-internal-dmg.command").read_text(encoding="utf-8")
 
-        self.assertIn('bundle_identifier="com.voxtype.dev"', spec)
-        agent = (ROOT / "packaging" / "com.voxtype.dev.agent.plist").read_text(
+        self.assertIn('bundle_identifier="com.wjcdev.veyqa"', spec)
+        agent = (ROOT / "packaging" / "com.wjcdev.veyqa.agent.plist").read_text(
             encoding="utf-8"
         )
-        self.assertIn("com.voxtype.dev.agent", agent)
-        self.assertIn("Contents/Resources/VoxTypeSupervisor", agent)
-        self.assertIn('AGENT_PLIST_NAME = "com.voxtype.dev.agent.plist"', (
+        self.assertIn("com.wjcdev.veyqa.agent", agent)
+        self.assertIn("Contents/Resources/VeyqaSupervisor", agent)
+        self.assertIn('AGENT_PLIST_NAME = "com.wjcdev.veyqa.agent.plist"', (
             ROOT / "src" / "login_item.py"
         ).read_text(encoding="utf-8"))
-        self.assertIn('--identifier "com.voxtype.dev"', build)
+        self.assertIn('--identifier "com.wjcdev.veyqa"', build)
 
     def test_old_identity_is_only_kept_for_login_item_migration(self):
         spec = (ROOT / "packaging" / "VoiceInput.spec").read_text(encoding="utf-8")
@@ -59,7 +59,7 @@ class PackagingIdentityTests(unittest.TestCase):
 
         self.assertNotIn("permissionPID == Int(parentPID)", settings)
         self.assertIn("Darwin.kill(Int32(permissionPID), 0) == 0", settings)
-        self.assertIn('appendingPathComponent("Contents/MacOS/VoxType")', settings)
+        self.assertIn('appendingPathComponent("Contents/MacOS/Veyqa")', settings)
 
     def test_packaging_embeds_modern_service_management_agent(self):
         build = (ROOT / "build-internal-dmg.command").read_text(encoding="utf-8")
@@ -67,12 +67,12 @@ class PackagingIdentityTests(unittest.TestCase):
             encoding="utf-8"
         )
         spec = (ROOT / "packaging" / "VoiceInput.spec").read_text(encoding="utf-8")
-        agent = ROOT / "packaging" / "com.voxtype.dev.agent.plist"
+        agent = ROOT / "packaging" / "com.wjcdev.veyqa.agent.plist"
 
         self.assertTrue(agent.exists())
         self.assertIn("Contents/Library/LaunchAgents", build)
-        self.assertIn("VoxTypeSupervisor", build)
-        supervisor = (ROOT / "native_settings" / "VoxTypeSupervisor.swift").read_text(
+        self.assertIn("VeyqaSupervisor", build)
+        supervisor = (ROOT / "native_settings" / "VeyqaSupervisor.swift").read_text(
             encoding="utf-8"
         )
         settings = (ROOT / "native_settings" / "VoiceInputSettings.swift").read_text(
@@ -83,11 +83,11 @@ class PackagingIdentityTests(unittest.TestCase):
         self.assertIn("NSRunningApplication.runningApplications", supervisor)
         self.assertIn("_NSGetExecutablePath", supervisor)
         self.assertIn("urlForApplication", supervisor)
-        self.assertIn('URL(fileURLWithPath: "/Applications/VoxType.app")', supervisor)
+        self.assertIn('URL(fileURLWithPath: "/Applications/Veyqa.app")', supervisor)
         self.assertIn("Bundle(url: resolved)?.bundleIdentifier", supervisor)
         self.assertNotIn('executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")', supervisor)
         self.assertIn("native_settings/SettingsCore.swift", native_build)
-        self.assertIn("Contents/Helpers/VoxTypeSettings.app", build)
+        self.assertIn("Contents/Helpers/VeyqaSettings.app", build)
         self.assertNotIn("VoiceInputSettings.appbin", build)
         self.assertNotIn("VoiceInputSettings.appbin", spec)
 
@@ -106,13 +106,13 @@ class PackagingIdentityTests(unittest.TestCase):
         self.assertIn("VOICE_INPUT_DISABLE_LOGIN_SYNC=true", verifier)
         self.assertIn("系统注册型录音快捷键已启用", verifier)
         self.assertIn("Stressing the bundled settings helper startup five times", verifier)
-        self.assertIn("Contents/Helpers/VoxTypeSettings.app", verifier)
+        self.assertIn("Contents/Helpers/VeyqaSettings.app", verifier)
         self.assertIn("Triggering two registered hotkeys in the frozen app", verifier)
         self.assertIn("post-hotkey-event.py", verifier)
         self.assertIn('pgrep -f -x "$SETTINGS_EXECUTABLE"', verifier)
         self.assertIn("Hotkey cycle settings helper did not finish startup", verifier)
         self.assertIn("mktemp -d", verifier)
-        self.assertNotIn("/Applications/VoxType.app", verifier)
+        self.assertNotIn("/Applications/Veyqa.app", verifier)
         self.assertNotIn("SMAppService", verifier)
 
     def test_dead_permission_process_does_not_trap_the_user(self):

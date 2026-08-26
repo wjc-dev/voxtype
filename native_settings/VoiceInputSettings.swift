@@ -448,7 +448,7 @@ final class SettingsModel: ObservableObject {
             else { return false }
             if let executablePath = permissions.executablePath {
                 let expectedExecutable = URL(fileURLWithPath: appPath)
-                    .appendingPathComponent("Contents/MacOS/VoxType")
+                    .appendingPathComponent("Contents/MacOS/Veyqa")
                     .standardizedFileURL.path
                 guard URL(fileURLWithPath: executablePath).standardizedFileURL.path
                         == expectedExecutable
@@ -647,7 +647,7 @@ final class SettingsModel: ObservableObject {
 
     func restartAndRecheckPermissions() {
         guard permissionProcessAlive else {
-            errorMessage = "当前 VoxType 主程序已经退出，请重新打开 App。"
+            errorMessage = "当前 Veyqa 主程序已经退出，请重新打开 App。"
             return
         }
         guard isBundled else {
@@ -1060,7 +1060,7 @@ struct PermissionSetupView: View {
                     .foregroundStyle(.white, Color.accentColor)
                     .frame(width: 68, height: 68)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("VoxType 权限")
+                    Text("Veyqa 权限")
                         .font(.system(size: 30, weight: .bold))
                     Text("只检测当前正在运行的 App，不按同名历史条目猜测。")
                         .foregroundStyle(.secondary)
@@ -1103,7 +1103,7 @@ struct PermissionSetupView: View {
                     Button("关闭设置窗口") { NSApp.terminate(nil) }
                     if model.permissionProcessAlive {
                         Divider()
-                        Button("退出 VoxType", role: .destructive) {
+                        Button("退出 Veyqa", role: .destructive) {
                             model.quitVoiceInput()
                         }
                     }
@@ -1153,7 +1153,7 @@ struct PermissionSetupView: View {
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
-            Text("VoxType v\(model.permissions.version ?? "—") · \(model.permissions.bundleIdentifier ?? "—")")
+            Text("Veyqa v\(model.permissions.version ?? "—") · \(model.permissions.bundleIdentifier ?? "—")")
                 .font(.callout.weight(.medium))
             Text(model.permissions.bundlePath ?? model.appPath)
                 .font(.caption.monospaced())
@@ -1167,7 +1167,7 @@ struct PermissionSetupView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if !model.permissionProcessAlive {
-                Text("当前主程序已经退出。请关闭此窗口，再从“应用程序”或 Spotlight 重新打开 VoxType。")
+                Text("当前主程序已经退出。请关闭此窗口，再从“应用程序”或 Spotlight 重新打开 Veyqa。")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.red)
             }
@@ -1317,7 +1317,7 @@ struct GeneralSettingsView: View {
                         Spacer()
                         Button("管理权限…") { showPermissions = true }
                     }
-                    Button("退出 VoxType", role: .destructive) {
+                    Button("退出 Veyqa", role: .destructive) {
                         model.quitVoiceInput()
                     }
                 }

@@ -1,6 +1,6 @@
 """Modern macOS login-item registration for the bundled app.
 
-The LaunchAgent supervises a tiny bundled helper, not VoxType itself.  The
+The LaunchAgent supervises a tiny bundled helper, not Veyqa itself.  The
 helper can recover an unexpectedly missing app while remaining independent of
 normal app restarts.  This avoids the old pattern where launchd supervised
 `/usr/bin/open`, which exits successfully before the real app has even started.
@@ -17,7 +17,7 @@ from src.runtime_paths import DATA_DIR, IS_FROZEN
 from src.utils.logger import logger
 
 
-AGENT_PLIST_NAME = "com.voxtype.dev.agent.plist"
+AGENT_PLIST_NAME = "com.wjcdev.veyqa.agent.plist"
 SUPERVISOR_PAUSE_FILE = DATA_DIR / ".supervisor-paused"
 _STATUS_NAMES = {
     0: "not_registered",
@@ -26,6 +26,7 @@ _STATUS_NAMES = {
     3: "not_found",
 }
 _LEGACY_AGENT_NAMES = (
+    "com.voxtype.dev.agent.plist",
     "com.voxtype.dev.plist",
     "com.voxtype.dev.legacy.plist",
     "com.voiceinputnext.qwen.plist",

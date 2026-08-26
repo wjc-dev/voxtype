@@ -4,13 +4,13 @@ set -euo pipefail
 PROJECT_DIR="${0:A:h:h}"
 VERSION="0.2.0"
 OUTPUT_DIR="${1:-$PROJECT_DIR/dist-internal}"
-ZIP_PATH="$OUTPUT_DIR/VoxType-v${VERSION}-macOS-arm64-internal.zip"
-PKG_PATH="$OUTPUT_DIR/VoxType-v${VERSION}-macOS-arm64-internal.pkg"
-DMG_PATH="$OUTPUT_DIR/VoxType-v${VERSION}-macOS-arm64-internal.dmg"
-VERIFY_DIR="$(mktemp -d "${TMPDIR:-/tmp}/voxtype-verify.XXXXXX")"
+ZIP_PATH="$OUTPUT_DIR/Veyqa-v${VERSION}-macOS-arm64.zip"
+PKG_PATH="$OUTPUT_DIR/Veyqa-v${VERSION}-macOS-arm64.pkg"
+DMG_PATH="$OUTPUT_DIR/Veyqa-v${VERSION}-macOS-arm64.dmg"
+VERIFY_DIR="$(mktemp -d "${TMPDIR:-/tmp}/veyqa-verify.XXXXXX")"
 EXTRACT_DIR="$VERIFY_DIR/extracted"
 DATA_DIR="$VERIFY_DIR/data"
-APP_PATH="$EXTRACT_DIR/VoxType.app"
+APP_PATH="$EXTRACT_DIR/Veyqa.app"
 APP_PID=""
 ACTIVE_SETTINGS_PID=""
 SETTINGS_EXECUTABLE=""
@@ -89,9 +89,9 @@ mkdir -p "$EXTRACT_DIR" "$DATA_DIR"
 ditto -x -k "$ZIP_PATH" "$EXTRACT_DIR"
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 /usr/bin/plutil -lint \
-  "$APP_PATH/Contents/Library/LaunchAgents/com.voxtype.dev.agent.plist"
-SETTINGS_APP="$APP_PATH/Contents/Helpers/VoxTypeSettings.app"
-SETTINGS_EXECUTABLE="$SETTINGS_APP/Contents/MacOS/VoxTypeSettings"
+  "$APP_PATH/Contents/Library/LaunchAgents/com.wjcdev.veyqa.agent.plist"
+SETTINGS_APP="$APP_PATH/Contents/Helpers/VeyqaSettings.app"
+SETTINGS_EXECUTABLE="$SETTINGS_APP/Contents/MacOS/VeyqaSettings"
 /usr/bin/plutil -lint "$SETTINGS_APP/Contents/Info.plist"
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$SETTINGS_APP"
 bundle_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
@@ -100,7 +100,7 @@ bundle_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString'
   print -u2 "Bundle version mismatch: expected $VERSION, got $bundle_version"
   exit 1
 }
-file "$APP_PATH/Contents/MacOS/VoxType" | grep -q "arm64"
+file "$APP_PATH/Contents/MacOS/Veyqa" | grep -q "arm64"
 file "$SETTINGS_EXECUTABLE" | grep -q "arm64"
 
 print "[4/7] Stressing the bundled settings helper startup five times"
@@ -163,13 +163,13 @@ AUDIO_ARCHIVE_ENABLED=false" > "$cycle_data/.env"
 
   VOICE_INPUT_DATA_DIR="$cycle_data" \
   VOICE_INPUT_DISABLE_LOGIN_SYNC=true \
-    "$APP_PATH/Contents/MacOS/VoxType" --background-login \
+    "$APP_PATH/Contents/MacOS/Veyqa" --background-login \
       >"$cycle_data/console.log" 2>&1 &
   APP_PID=$!
   local registered=false
   for _attempt in {1..60}; do
     if ! kill -0 "$APP_PID" >/dev/null 2>&1; then
-      print -u2 "VoxType exited before registering hotkey $label"
+      print -u2 "Veyqa exited before registering hotkey $label"
       exit 1
     fi
     if [[ -f "$cycle_log" ]] \
@@ -237,7 +237,7 @@ print "[6/7] Running menu-bar/settings smoke test without login-item mutation"
 VOICE_INPUT_DATA_DIR="$DATA_DIR" \
 VOICE_INPUT_DISABLE_LOGIN_SYNC=true \
 STATUS_BAR_SELF_TEST=true \
-  "$APP_PATH/Contents/MacOS/VoxType" >"$VERIFY_DIR/app.log" 2>&1 &
+  "$APP_PATH/Contents/MacOS/Veyqa" >"$VERIFY_DIR/app.log" 2>&1 &
 APP_PID=$!
 
 status_log="$DATA_DIR/logs/settings_ui.log"
@@ -245,7 +245,7 @@ runtime_log="$DATA_DIR/logs/app.log"
 ready=false
 for _attempt in {1..60}; do
   if ! kill -0 "$APP_PID" >/dev/null 2>&1; then
-    print -u2 "VoxType exited during smoke test"
+    print -u2 "Veyqa exited during smoke test"
     dump_smoke_logs
     exit 1
   fi

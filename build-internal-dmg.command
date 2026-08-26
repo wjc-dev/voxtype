@@ -11,10 +11,10 @@ PYINSTALLER_DIST="$WORK_DIR/dist"
 ICONSET="$WORK_DIR/AppIcon.iconset"
 STAGING="$WORK_DIR/dmg"
 CLANG_CACHE="$WORK_DIR/clang-module-cache"
-APP_PATH="$PYINSTALLER_DIST/VoxType.app"
-DMG_PATH="$OUTPUT_DIR/VoxType-v${VERSION}-macOS-arm64-internal.dmg"
-ZIP_PATH="$OUTPUT_DIR/VoxType-v${VERSION}-macOS-arm64-internal.zip"
-PKG_PATH="$OUTPUT_DIR/VoxType-v${VERSION}-macOS-arm64-internal.pkg"
+APP_PATH="$PYINSTALLER_DIST/Veyqa.app"
+DMG_PATH="$OUTPUT_DIR/Veyqa-v${VERSION}-macOS-arm64.dmg"
+ZIP_PATH="$OUTPUT_DIR/Veyqa-v${VERSION}-macOS-arm64.zip"
+PKG_PATH="$OUTPUT_DIR/Veyqa-v${VERSION}-macOS-arm64.pkg"
 
 cleanup() {
   # Generated .app bundles must not remain under the source tree. LaunchServices
@@ -43,8 +43,8 @@ zsh "$PROJECT_DIR/build-native-settings.command"
 
 xcrun swiftc -O -target arm64-apple-macos13.0 \
   -framework AppKit \
-  "$PROJECT_DIR/native_settings/VoxTypeSupervisor.swift" \
-  -o "$PROJECT_DIR/build/VoxTypeSupervisor"
+  "$PROJECT_DIR/native_settings/VeyqaSupervisor.swift" \
+  -o "$PROJECT_DIR/build/VeyqaSupervisor"
 
 if [[ ! -f "$PROJECT_DIR/packaging/AppIcon.icns" || \
       "$PROJECT_DIR/packaging/generate_app_icon.swift" -nt "$PROJECT_DIR/packaging/AppIcon.icns" ]]; then
@@ -68,12 +68,12 @@ fi
 mkdir -p "$APP_PATH/Contents/Helpers" \
   "$APP_PATH/Contents/Library/LaunchAgents" \
   "$APP_PATH/Contents/Resources"
-ditto "$PROJECT_DIR/build/VoxTypeSettings.app" \
-  "$APP_PATH/Contents/Helpers/VoxTypeSettings.app"
-cp "$PROJECT_DIR/packaging/com.voxtype.dev.agent.plist" \
-  "$APP_PATH/Contents/Library/LaunchAgents/com.voxtype.dev.agent.plist"
-cp "$PROJECT_DIR/build/VoxTypeSupervisor" \
-  "$APP_PATH/Contents/Resources/VoxTypeSupervisor"
+ditto "$PROJECT_DIR/build/VeyqaSettings.app" \
+  "$APP_PATH/Contents/Helpers/VeyqaSettings.app"
+cp "$PROJECT_DIR/packaging/com.wjcdev.veyqa.agent.plist" \
+  "$APP_PATH/Contents/Library/LaunchAgents/com.wjcdev.veyqa.agent.plist"
+cp "$PROJECT_DIR/build/VeyqaSupervisor" \
+  "$APP_PATH/Contents/Resources/VeyqaSupervisor"
 
 while IFS= read -r -d '' FILE; do
   if [[ -x "$FILE" || "$FILE" == *.dylib || "$FILE" == *.so ]]; then
@@ -82,11 +82,11 @@ while IFS= read -r -d '' FILE; do
 done < <(find "$APP_PATH/Contents" -type f -print0)
 
 /usr/bin/codesign --force --sign - --timestamp=none \
-  "$APP_PATH/Contents/Helpers/VoxTypeSettings.app"
+  "$APP_PATH/Contents/Helpers/VeyqaSettings.app"
 
 /usr/bin/codesign --force --sign - --timestamp=none \
   --entitlements "$PROJECT_DIR/packaging/voice_input.entitlements" \
-  "$APP_PATH/Contents/MacOS/VoxType"
+  "$APP_PATH/Contents/MacOS/Veyqa"
 /usr/bin/codesign --force --sign - --timestamp=none \
   --entitlements "$PROJECT_DIR/packaging/voice_input.entitlements" \
   "$APP_PATH"
@@ -95,7 +95,7 @@ done < <(find "$APP_PATH/Contents" -type f -print0)
 /usr/bin/pkgbuild \
   --component "$APP_PATH" \
   --install-location "/Applications" \
-  --identifier "com.voxtype.dev" \
+  --identifier "com.wjcdev.veyqa" \
   --version "$VERSION" \
   "$PKG_PATH"
 shasum -a 256 "$PKG_PATH" > "$PKG_PATH.sha256"
@@ -107,10 +107,10 @@ ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ZIP_PATH"
 shasum -a 256 "$ZIP_PATH" > "$ZIP_PATH.sha256"
 print "完成：$ZIP_PATH"
 
-ditto "$APP_PATH" "$STAGING/VoxType.app"
+ditto "$APP_PATH" "$STAGING/Veyqa.app"
 ln -s /Applications "$STAGING/Applications"
 
-if hdiutil create -volname "VoxType" -srcfolder "$STAGING" \
+if hdiutil create -volname "Veyqa" -srcfolder "$STAGING" \
   -ov -format UDZO "$DMG_PATH" >/dev/null; then
   shasum -a 256 "$DMG_PATH" > "$DMG_PATH.sha256"
   print "完成：$DMG_PATH"

@@ -98,7 +98,7 @@ class VoiceSession:
 
 
 def check_microphone_permissions() -> None:
-    logger.warning("请在系统设置 → 隐私与安全性 → 麦克风中允许 VoxType")
+    logger.warning("请在系统设置 → 隐私与安全性 → 麦克风中允许 Veyqa")
 
 
 class VoiceAssistant:

@@ -27,7 +27,7 @@ from src.transcription.qwen_streaming import QwenStreamingProcessor
 
 
 def load_credentials() -> None:
-    app_env = Path.home() / "Library/Application Support/VoxType Next/.env"
+    app_env = Path.home() / "Library/Application Support/Veyqa/.env"
     load_dotenv(app_env, override=False)
     load_dotenv(ROOT / ".env", override=False)
 
@@ -135,4 +135,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

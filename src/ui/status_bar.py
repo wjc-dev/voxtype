@@ -143,19 +143,19 @@ def _launch_settings_window(on_restart=None) -> int:
             containing_bundle
             / "Contents"
             / "Helpers"
-            / "VoxTypeSettings.app"
+            / "VeyqaSettings.app"
             / "Contents"
             / "MacOS"
-            / "VoxTypeSettings"
+            / "VeyqaSettings"
         )
     else:
         native_binary = os.path.join(
             root_dir,
             "build",
-            "VoxTypeSettings.app",
+            "VeyqaSettings.app",
             "Contents",
             "MacOS",
-            "VoxTypeSettings",
+            "VeyqaSettings",
         )
     log_dir = str(LOG_DIR)
     log_path = os.path.join(log_dir, "settings_ui.log")

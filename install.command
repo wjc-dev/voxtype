@@ -9,7 +9,7 @@ USER_ID="$(id -u)"
 PLIST_PATH="$HOME/Library/LaunchAgents/${LABEL}.plist"
 
 print ""
-print "VoxType Next — macOS 安装"
+print "Veyqa — macOS 安装"
 print "项目目录：$PROJECT_DIR"
 print ""
 

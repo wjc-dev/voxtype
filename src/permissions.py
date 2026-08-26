@@ -107,7 +107,7 @@ def _bundle_identifier(bundle: Path | None) -> str:
 
 
 class PermissionMonitor:
-    """Publish status and execute requests as the current VoxType process."""
+    """Publish status and execute requests as the current Veyqa process."""
 
     def __init__(
         self,

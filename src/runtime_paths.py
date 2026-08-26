@@ -18,7 +18,7 @@ def _default_data_dir() -> Path:
     if override:
         return Path(override).expanduser()
     if IS_FROZEN:
-        return Path.home() / "Library" / "Application Support" / "Voice Input Next"
+        return Path.home() / "Library" / "Application Support" / "Veyqa"
     return SOURCE_ROOT
 
 
@@ -37,6 +37,30 @@ LOG_DIR = DATA_DIR / "logs"
 
 def ensure_runtime_layout() -> None:
     """Create private writable storage and seed a safe configuration template."""
+    if IS_FROZEN and not DATA_DIR.exists():
+        # A rebrand must not make users re-enter ASR credentials or lose their
+        # shortcut and vocabulary. Migrate only configuration/state files, not
+        # recordings or logs, from the previous app identities.
+        for legacy_dir in (
+            Path.home() / "Library" / "Application Support" / "Voice Input Next",
+            Path.home() / "Library" / "Application Support" / "VoxType Next",
+            Path.home() / "Library" / "Application Support" / "VoxType",
+        ):
+            if not legacy_dir.is_dir():
+                continue
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            for filename in (
+                ".env",
+                "personal_context.txt",
+                "custom_vocabulary.txt",
+                "corrections.json",
+                "recovery.json",
+            ):
+                source = legacy_dir / filename
+                destination = DATA_DIR / filename
+                if source.is_file() and not destination.exists():
+                    shutil.copy2(source, destination)
+            break
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     try:
         DATA_DIR.chmod(0o700)

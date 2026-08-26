@@ -4,8 +4,8 @@ set -euo pipefail
 PROJECT_DIR="${0:A:h}"
 cd "$PROJECT_DIR"
 mkdir -p build/swift-module-cache build/clang-module-cache
-SETTINGS_APP="$PROJECT_DIR/build/VoxTypeSettings.app"
-SETTINGS_EXECUTABLE="$SETTINGS_APP/Contents/MacOS/VoxTypeSettings"
+SETTINGS_APP="$PROJECT_DIR/build/VeyqaSettings.app"
+SETTINGS_EXECUTABLE="$SETTINGS_APP/Contents/MacOS/VeyqaSettings"
 
 if ! xcrun --find swiftc >/dev/null 2>&1; then
   print -u2 "缺少 Swift 编译器，请先运行：xcode-select --install"
