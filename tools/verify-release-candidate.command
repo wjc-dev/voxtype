@@ -4,13 +4,13 @@ set -euo pipefail
 PROJECT_DIR="${0:A:h:h}"
 VERSION="0.2.0"
 OUTPUT_DIR="${1:-$PROJECT_DIR/dist-internal}"
-ZIP_PATH="$OUTPUT_DIR/Veyqa-v${VERSION}-macOS-arm64.zip"
-PKG_PATH="$OUTPUT_DIR/Veyqa-v${VERSION}-macOS-arm64.pkg"
-DMG_PATH="$OUTPUT_DIR/Veyqa-v${VERSION}-macOS-arm64.dmg"
+ZIP_PATH="$OUTPUT_DIR/Veyqa-Voice-v${VERSION}-macOS-arm64.zip"
+PKG_PATH="$OUTPUT_DIR/Veyqa-Voice-v${VERSION}-macOS-arm64.pkg"
+DMG_PATH="$OUTPUT_DIR/Veyqa-Voice-v${VERSION}-macOS-arm64.dmg"
 VERIFY_DIR="$(mktemp -d "${TMPDIR:-/tmp}/veyqa-verify.XXXXXX")"
 EXTRACT_DIR="$VERIFY_DIR/extracted"
 DATA_DIR="$VERIFY_DIR/data"
-APP_PATH="$EXTRACT_DIR/Veyqa.app"
+APP_PATH="$EXTRACT_DIR/Veyqa Voice.app"
 APP_PID=""
 ACTIVE_SETTINGS_PID=""
 SETTINGS_EXECUTABLE=""
@@ -100,7 +100,7 @@ bundle_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString'
   print -u2 "Bundle version mismatch: expected $VERSION, got $bundle_version"
   exit 1
 }
-file "$APP_PATH/Contents/MacOS/Veyqa" | grep -q "arm64"
+file "$APP_PATH/Contents/MacOS/VeyqaVoice" | grep -q "arm64"
 file "$SETTINGS_EXECUTABLE" | grep -q "arm64"
 
 print "[4/7] Stressing the bundled settings helper startup five times"
@@ -163,13 +163,13 @@ AUDIO_ARCHIVE_ENABLED=false" > "$cycle_data/.env"
 
   VOICE_INPUT_DATA_DIR="$cycle_data" \
   VOICE_INPUT_DISABLE_LOGIN_SYNC=true \
-    "$APP_PATH/Contents/MacOS/Veyqa" --background-login \
+    "$APP_PATH/Contents/MacOS/VeyqaVoice" --background-login \
       >"$cycle_data/console.log" 2>&1 &
   APP_PID=$!
   local registered=false
   for _attempt in {1..60}; do
     if ! kill -0 "$APP_PID" >/dev/null 2>&1; then
-      print -u2 "Veyqa exited before registering hotkey $label"
+      print -u2 "Veyqa Voice exited before registering hotkey $label"
       exit 1
     fi
     if [[ -f "$cycle_log" ]] \
@@ -237,7 +237,7 @@ print "[6/7] Running menu-bar/settings smoke test without login-item mutation"
 VOICE_INPUT_DATA_DIR="$DATA_DIR" \
 VOICE_INPUT_DISABLE_LOGIN_SYNC=true \
 STATUS_BAR_SELF_TEST=true \
-  "$APP_PATH/Contents/MacOS/Veyqa" >"$VERIFY_DIR/app.log" 2>&1 &
+  "$APP_PATH/Contents/MacOS/VeyqaVoice" >"$VERIFY_DIR/app.log" 2>&1 &
 APP_PID=$!
 
 status_log="$DATA_DIR/logs/settings_ui.log"
@@ -245,7 +245,7 @@ runtime_log="$DATA_DIR/logs/app.log"
 ready=false
 for _attempt in {1..60}; do
   if ! kill -0 "$APP_PID" >/dev/null 2>&1; then
-    print -u2 "Veyqa exited during smoke test"
+    print -u2 "Veyqa Voice exited during smoke test"
     dump_smoke_logs
     exit 1
   fi

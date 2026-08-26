@@ -57,9 +57,9 @@ private func enclosingAppURL() -> URL? {
         return liveURL
     }
     let standardCandidates = [
-        URL(fileURLWithPath: "/Applications/Veyqa.app"),
+        URL(fileURLWithPath: "/Applications/Veyqa Voice.app"),
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Applications/Veyqa.app"),
+            .appendingPathComponent("Applications/Veyqa Voice.app"),
     ]
     if let installedURL = standardCandidates.compactMap(verifiedHost).first {
         return installedURL
@@ -95,7 +95,7 @@ private func launch(_ appURL: URL) -> Bool {
 }
 
 guard let appURL = enclosingAppURL() else {
-    log("cannot locate containing Veyqa.app")
+    log("cannot locate containing Veyqa Voice.app")
     exit(78)
 }
 
@@ -122,7 +122,7 @@ while true {
 
     launches.append(now)
     if launch(appURL) {
-        log("Veyqa launch requested")
+        log("Veyqa Voice launch requested")
         // LaunchServices may need a few seconds to finish starting a frozen
         // Python bundle. Do not count that normal startup time as another crash.
         sleep(10)

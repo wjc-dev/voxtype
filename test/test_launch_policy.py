@@ -11,7 +11,7 @@ class LaunchPolicyTests(unittest.TestCase):
                 _should_open_settings_on_start(
                     processor_present=processor_present,
                     is_frozen=True,
-                    arguments=["Veyqa", "--background-login"],
+                    arguments=["VeyqaVoice", "--background-login"],
                     restarting=False,
                 )
             )
@@ -21,7 +21,7 @@ class LaunchPolicyTests(unittest.TestCase):
             _should_open_settings_on_start(
                 processor_present=False,
                 is_frozen=True,
-                arguments=["Veyqa"],
+                arguments=["VeyqaVoice"],
                 restarting=False,
             )
         )
@@ -29,7 +29,7 @@ class LaunchPolicyTests(unittest.TestCase):
             _should_open_settings_on_start(
                 processor_present=True,
                 is_frozen=True,
-                arguments=["Veyqa"],
+                arguments=["VeyqaVoice"],
                 restarting=False,
             )
         )
@@ -39,7 +39,7 @@ class LaunchPolicyTests(unittest.TestCase):
             _should_open_settings_on_start(
                 processor_present=False,
                 is_frozen=True,
-                arguments=["Veyqa"],
+                arguments=["VeyqaVoice"],
                 restarting=True,
             )
         )
@@ -49,14 +49,14 @@ class LaunchPolicyTests(unittest.TestCase):
             _should_open_settings_on_start(
                 processor_present=True,
                 is_frozen=True,
-                arguments=["Veyqa", "--show-settings-after-restart"],
+                arguments=["VeyqaVoice", "--show-settings-after-restart"],
                 restarting=True,
             )
         )
 
     def test_restart_exec_requests_settings_reopen_without_duplicate_flag(self):
         with (
-            patch("main.sys.argv", ["Veyqa", "--show-settings-after-restart"]),
+            patch("main.sys.argv", ["VeyqaVoice", "--show-settings-after-restart"]),
             patch("main.os.execv") as execv,
         ):
             VoiceAssistant._restart_application()

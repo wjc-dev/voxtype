@@ -16,7 +16,7 @@ class PackagingIdentityTests(unittest.TestCase):
         self.assertIn('version="0.2.0"', spec)
         self.assertIn('"CFBundleShortVersionString": "0.2.0"', spec)
         self.assertIn('VERSION="0.2.0"', build)
-        self.assertIn('PACKAGE_NAME="Veyqa-v0.2.0"', source_package)
+        self.assertIn('PACKAGE_NAME="Veyqa-Voice-v0.2.0"', source_package)
 
     def test_current_app_and_login_item_use_stable_qwen_identity(self):
         spec = (ROOT / "packaging" / "VoiceInput.spec").read_text(encoding="utf-8")
@@ -59,7 +59,7 @@ class PackagingIdentityTests(unittest.TestCase):
 
         self.assertNotIn("permissionPID == Int(parentPID)", settings)
         self.assertIn("Darwin.kill(Int32(permissionPID), 0) == 0", settings)
-        self.assertIn('appendingPathComponent("Contents/MacOS/Veyqa")', settings)
+        self.assertIn('appendingPathComponent("Contents/MacOS/VeyqaVoice")', settings)
 
     def test_packaging_embeds_modern_service_management_agent(self):
         build = (ROOT / "build-internal-dmg.command").read_text(encoding="utf-8")
@@ -83,7 +83,7 @@ class PackagingIdentityTests(unittest.TestCase):
         self.assertIn("NSRunningApplication.runningApplications", supervisor)
         self.assertIn("_NSGetExecutablePath", supervisor)
         self.assertIn("urlForApplication", supervisor)
-        self.assertIn('URL(fileURLWithPath: "/Applications/Veyqa.app")', supervisor)
+        self.assertIn('URL(fileURLWithPath: "/Applications/Veyqa Voice.app")', supervisor)
         self.assertIn("Bundle(url: resolved)?.bundleIdentifier", supervisor)
         self.assertNotIn('executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")', supervisor)
         self.assertIn("native_settings/SettingsCore.swift", native_build)
@@ -112,7 +112,7 @@ class PackagingIdentityTests(unittest.TestCase):
         self.assertIn('pgrep -f -x "$SETTINGS_EXECUTABLE"', verifier)
         self.assertIn("Hotkey cycle settings helper did not finish startup", verifier)
         self.assertIn("mktemp -d", verifier)
-        self.assertNotIn("/Applications/Veyqa.app", verifier)
+        self.assertNotIn("/Applications/Veyqa Voice.app", verifier)
         self.assertNotIn("SMAppService", verifier)
 
     def test_dead_permission_process_does_not_trap_the_user(self):

@@ -9,7 +9,7 @@ USER_ID="$(id -u)"
 PLIST_PATH="$HOME/Library/LaunchAgents/${LABEL}.plist"
 
 print ""
-print "Veyqa — macOS 安装"
+print "Veyqa Voice — macOS 安装"
 print "项目目录：$PROJECT_DIR"
 print ""
 

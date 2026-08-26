@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleDisplayName</key>
-    <string>Veyqa 设置</string>
+    <string>Veyqa Voice 设置</string>
     <key>CFBundleExecutable</key>
     <string>VeyqaSettings</string>
     <key>CFBundleIdentifier</key>
     <string>com.wjcdev.veyqa.settings</string>
     <key>CFBundleName</key>
-    <string>Veyqa 设置</string>
+    <string>Veyqa Voice 设置</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

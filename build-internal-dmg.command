@@ -11,10 +11,10 @@ PYINSTALLER_DIST="$WORK_DIR/dist"
 ICONSET="$WORK_DIR/AppIcon.iconset"
 STAGING="$WORK_DIR/dmg"
 CLANG_CACHE="$WORK_DIR/clang-module-cache"
-APP_PATH="$PYINSTALLER_DIST/Veyqa.app"
-DMG_PATH="$OUTPUT_DIR/Veyqa-v${VERSION}-macOS-arm64.dmg"
-ZIP_PATH="$OUTPUT_DIR/Veyqa-v${VERSION}-macOS-arm64.zip"
-PKG_PATH="$OUTPUT_DIR/Veyqa-v${VERSION}-macOS-arm64.pkg"
+APP_PATH="$PYINSTALLER_DIST/Veyqa Voice.app"
+DMG_PATH="$OUTPUT_DIR/Veyqa-Voice-v${VERSION}-macOS-arm64.dmg"
+ZIP_PATH="$OUTPUT_DIR/Veyqa-Voice-v${VERSION}-macOS-arm64.zip"
+PKG_PATH="$OUTPUT_DIR/Veyqa-Voice-v${VERSION}-macOS-arm64.pkg"
 
 cleanup() {
   # Generated .app bundles must not remain under the source tree. LaunchServices
@@ -86,7 +86,7 @@ done < <(find "$APP_PATH/Contents" -type f -print0)
 
 /usr/bin/codesign --force --sign - --timestamp=none \
   --entitlements "$PROJECT_DIR/packaging/voice_input.entitlements" \
-  "$APP_PATH/Contents/MacOS/Veyqa"
+  "$APP_PATH/Contents/MacOS/VeyqaVoice"
 /usr/bin/codesign --force --sign - --timestamp=none \
   --entitlements "$PROJECT_DIR/packaging/voice_input.entitlements" \
   "$APP_PATH"
@@ -107,10 +107,10 @@ ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ZIP_PATH"
 shasum -a 256 "$ZIP_PATH" > "$ZIP_PATH.sha256"
 print "完成：$ZIP_PATH"
 
-ditto "$APP_PATH" "$STAGING/Veyqa.app"
+ditto "$APP_PATH" "$STAGING/Veyqa Voice.app"
 ln -s /Applications "$STAGING/Applications"
 
-if hdiutil create -volname "Veyqa" -srcfolder "$STAGING" \
+if hdiutil create -volname "Veyqa Voice" -srcfolder "$STAGING" \
   -ov -format UDZO "$DMG_PATH" >/dev/null; then
   shasum -a 256 "$DMG_PATH" > "$DMG_PATH.sha256"
   print "完成：$DMG_PATH"

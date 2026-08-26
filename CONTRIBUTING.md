@@ -50,7 +50,7 @@ git push -u origin feature/short-description
 4. 在一台未装源码版的 Mac 上执行冒烟测试。
 5. 安装包不要直接提交进 Git 历史；建议作为 Codeup 版本/制品附件发布，并附 SHA-256。
 
-内测包为 ad-hoc 签名：每次构建都会改变 CDHash。用户覆盖升级后若快捷键失效，需要从“系统设置 → 隐私与安全性 → 辅助功能/输入监控”删除旧条目，重新加入当前 `/Applications/Veyqa.app` 并重启。
+内测包为 ad-hoc 签名：每次构建都会改变 CDHash。用户覆盖升级后若快捷键失效，需要从“系统设置 → 隐私与安全性 → 辅助功能/输入监控”删除旧条目，重新加入当前 `/Applications/Veyqa Voice.app` 并重启。
 
 ## 源码包
 
